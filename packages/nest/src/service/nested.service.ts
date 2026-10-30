@@ -1,6 +1,6 @@
 import { NotFoundException } from "@nestjs/common"
-import type { DelegateHost, ModelDelegate, OrgRow } from "./prisma-delegate.js"
-import { requireInOrg } from "./require-in-org.js"
+import type { DelegateHost, ModelDelegate, OrgRow } from "../core/types.js"
+import { requireInOrg } from "../tenancy/require-in-org.js"
 
 export type NestedResourceConfig = {
   /** Parent model key on PrismaService (e.g. 'savTicket'). */

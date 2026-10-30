@@ -4,8 +4,8 @@ import { describe, it } from "node:test"
 import { ForbiddenException } from "@nestjs/common"
 import { OrgCrudService } from "./crud.service.js"
 import { OrgCrudController } from "./crud.controller.js"
-import { defineResource } from "./resource.js"
-import { createMockDelegate } from "./test-mock-delegate.js"
+import { defineResource } from "../resource/resource.js"
+import { createMockDelegate } from "../testing/mock-delegate.js"
 
 class Ctrl extends OrgCrudController {
   constructor(protected readonly service: OrgCrudService) {

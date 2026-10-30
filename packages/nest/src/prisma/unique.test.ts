@@ -7,7 +7,7 @@ import {
   prismaUniqueError,
   prismaUniqueFields,
   prismaUniqueIncludes,
-} from "./map-prisma-unique.js"
+} from "./unique.js"
 
 describe("mapPrismaUnique", () => {
   it("maps field message", () => {

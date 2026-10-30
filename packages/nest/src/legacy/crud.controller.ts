@@ -28,6 +28,8 @@ export type AuthLikeRequest = {
  * stripped from list queries and ignored everywhere else. The `query`
  * parameters are kept on every handler for backwards compatibility with
  * subclasses that forward them; they are not used to pick the tenant.
+ *
+ * @deprecated Use `OrgResourceController({ create, update, query })` (typed DTOs, per-route decorators).
  */
 export abstract class OrgCrudController {
   protected abstract readonly service: OrgCrudService

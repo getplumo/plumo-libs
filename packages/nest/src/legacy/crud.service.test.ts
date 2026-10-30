@@ -2,13 +2,13 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { NotFoundException } from "@nestjs/common"
 import { OrgCrudService } from "./crud.service.js"
-import { defineResource } from "./resource.js"
-import { Filter } from "./filters.js"
-import { createMockDelegate } from "./test-mock-delegate.js"
+import { defineResource } from "../resource/resource.js"
+import { Filter } from "../query/filters.js"
+import { createMockDelegate } from "../testing/mock-delegate.js"
 import {
   requireAllRelatedInOrg,
   requireInOrg,
-} from "./require-in-org.js"
+} from "../tenancy/require-in-org.js"
 
 const productResource = defineResource({
   model: "product",

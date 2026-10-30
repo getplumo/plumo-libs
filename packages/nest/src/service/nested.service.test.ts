@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { NotFoundException } from "@nestjs/common"
-import { OrgNestedCrudService } from "./nested-crud.service.js"
-import { createMockDelegate } from "./test-mock-delegate.js"
+import { OrgNestedCrudService } from "./nested.service.js"
+import { createMockDelegate } from "../testing/mock-delegate.js"
 
 describe("OrgNestedCrudService", () => {
   it("CRUD children under parent", async () => {

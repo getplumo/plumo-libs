@@ -1,6 +1,42 @@
 // Decorator metadata polyfill: dist reads Reflect.getMetadata at import time.
 import "reflect-metadata"
 
+// ─── Core types & helpers ────────────────────────────────────────────────
+export { delegateOf } from "./core/types.js"
+export type {
+  OrgRow,
+  ModelDelegate,
+  DelegateHost,
+  TransactionHost,
+  WhereClause,
+  OrderBy,
+  SortDirection,
+  FieldOf,
+  Actor,
+} from "./core/types.js"
+export { toNumber, toCents, fromCents, sumMoney } from "./core/decimal.js"
+export type { DecimalLike } from "./core/decimal.js"
+
+// ─── Resource definition ─────────────────────────────────────────────────
+export {
+  defineResource,
+  includeFor,
+  resolveOrder,
+  buildWhereFromQuery,
+} from "./resource/resource.js"
+export type {
+  ResourceDefinition,
+  DefinedResource,
+  ResourceConfig,
+  ListCacheConfig,
+  RelationRule,
+  UniqueConfig,
+  IncludeOn,
+  SoftDeleteConfig,
+  SearchPath,
+} from "./resource/resource.js"
+
+// ─── Query pipeline (pagination, sort, search, filters) ──────────────────
 export {
   PaginationQueryDto,
   SortQueryDto,
@@ -9,54 +45,92 @@ export {
   DEFAULT_PAGE,
   DEFAULT_LIMIT,
   MAX_LIMIT,
-} from "./pagination.js"
-export type { PaginatedResult, PaginationMeta } from "./pagination.js"
-
-export { Filter, applySearch } from "./filters.js"
-export type { FilterBackend, FilterContext, WhereClause } from "./filters.js"
-
+} from "./query/pagination.js"
+export type { PaginatedResult, PaginationMeta } from "./query/pagination.js"
+export { Filter, applySearch } from "./query/filters.js"
+export type { FilterBackend, FilterContext } from "./query/filters.js"
 export {
-  defineResource,
-  buildWhereFromQuery,
-  resolveOrder,
-} from "./resource.js"
+  QueryStrategies,
+  buildListWhere,
+  planList,
+} from "./query/pipeline.js"
 export type {
-  ResourceConfig,
-  DefinedResource,
-  ListCacheConfig,
-  OrderBy,
-} from "./resource.js"
+  ListQuery,
+  QueryContext,
+  QueryStrategy,
+  ListPlan,
+} from "./query/pipeline.js"
 
-export { findManyPaginated } from "./find-many-paginated.js"
-
-export type {
-  OrgRow,
-  ModelDelegate,
-  DelegateHost,
-} from "./prisma-delegate.js"
-
+// ─── Tenancy ─────────────────────────────────────────────────────────────
 export {
   requireInOrg,
   requireRelatedInOrg,
   requireAllRelatedInOrg,
   requireInOrgModel,
-} from "./require-in-org.js"
-export type { OrgScopedDelegate } from "./require-in-org.js"
+} from "./tenancy/require-in-org.js"
+export type { OrgScopedDelegate } from "./tenancy/require-in-org.js"
+export {
+  CurrentOrgId,
+  CurrentActor,
+  orgIdFromAuth,
+} from "./tenancy/decorators.js"
+export type { AuthLike } from "./tenancy/decorators.js"
 
-export { OrgCrudService } from "./crud.service.js"
-export type { ListResult } from "./crud.service.js"
-export { OrgCrudController } from "./crud.controller.js"
+// ─── Service (typed CRUD + lifecycle hooks) ──────────────────────────────
+export { OrgResourceService } from "./service/org-resource.service.js"
+export type {
+  ResourceList,
+  ApprovalInput,
+} from "./service/org-resource.service.js"
+export type {
+  ResourceTypes,
+  RowOf,
+  TxOf,
+  CreateOf,
+  UpdateOf,
+  OutputOf,
+  ListItemOf,
+  WriteData,
+  WriteAction,
+  WriteContext,
+  CreateContext,
+  UpdateContext,
+  DestroyContext,
+  ApprovalContext,
+  ApprovalChange,
+  PresentContext,
+  PresentAction,
+  ListContext,
+} from "./service/context.js"
+export { OrgNestedCrudService } from "./service/nested.service.js"
+export type { NestedResourceConfig } from "./service/nested.service.js"
 
+// ─── Controller factory ──────────────────────────────────────────────────
+export {
+  OrgResourceController,
+  RESOURCE_ROUTE_METHOD,
+} from "./controller/resource.controller.js"
+export type {
+  OrgResourceControllerOptions,
+  OrgResourceControllerBase,
+  ResourceRoute,
+  RouteOptions,
+  RequestContext,
+  ResourceServiceLike,
+} from "./controller/resource.controller.js"
+
+// ─── List cache ──────────────────────────────────────────────────────────
 export {
   OrgListCache,
   defaultOrgListCache,
   ORG_LIST_CACHE_CONFIG,
-} from "./org-list-cache.js"
+} from "./cache/org-list-cache.js"
 export type {
   OrgListCacheOptions,
   OrgListCacheConfig,
-} from "./org-list-cache.js"
+} from "./cache/org-list-cache.js"
 
+// ─── Approval workflow ───────────────────────────────────────────────────
 export {
   ApprovalRole,
   approvalOnCreate,
@@ -64,23 +138,15 @@ export {
   canSetApprovalStatus,
   buildApprovalStatusPatch,
   applyApprovalUpdate,
-} from "./approval.js"
+} from "./approval/approval.js"
 export type {
   ApprovalStatusValue,
   ApprovalActor,
   ApprovalFields,
   ApprovalStatusPatch,
-} from "./approval.js"
+} from "./approval/approval.js"
 
-export {
-  mapApprovableCreate,
-  runApprovalUpdate,
-  withActor,
-} from "./trade-approvable.js"
-
-export { OrgNestedCrudService } from "./nested-crud.service.js"
-export type { NestedResourceConfig } from "./nested-crud.service.js"
-
+// ─── Prisma errors ───────────────────────────────────────────────────────
 export {
   isPrismaUnique,
   prismaUniqueFields,
@@ -88,11 +154,25 @@ export {
   mapPrismaUnique,
   prismaUniqueError,
   prismaAdapterUniqueError,
-} from "./map-prisma-unique.js"
-export type { PrismaUniqueLike } from "./map-prisma-unique.js"
+} from "./prisma/unique.js"
+export type { PrismaUniqueLike } from "./prisma/unique.js"
 
+// ─── Deprecated 0.1 API (kept for backward compatibility) ────────────────
+/** @deprecated use `OrgResourceService`. */
+export { OrgCrudService } from "./legacy/crud.service.js"
+export type { ListResult } from "./legacy/crud.service.js"
+/** @deprecated use `OrgResourceController()`. */
+export { OrgCrudController } from "./legacy/crud.controller.js"
+/** @deprecated use `OrgResourceService` list / `planList`. */
+export { findManyPaginated } from "./legacy/find-many-paginated.js"
+/** @deprecated use `OrgResourceService` hooks + `approvalOnCreate` / `updateApproval`. */
+export {
+  mapApprovableCreate,
+  runApprovalUpdate,
+  withActor,
+} from "./legacy/trade-approvable.js"
 export {
   TradeListQueryDto,
   CreateTradeLineItemDto,
   UpdateApprovalDto,
-} from "./trade-dto.js"
+} from "./legacy/trade-dto.js"

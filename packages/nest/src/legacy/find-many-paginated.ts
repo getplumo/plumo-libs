@@ -2,11 +2,13 @@ import {
   paginatedResult,
   resolvePagination,
   type PaginatedResult,
-} from "./pagination.js"
-import type { ModelDelegate, OrgRow } from "./prisma-delegate.js"
+} from "../query/pagination.js"
+import type { ModelDelegate, OrgRow } from "../core/types.js"
 
 /**
  * Low-level paginated findMany + count (for services that skip OrgCrudService).
+ *
+ * @deprecated Use `OrgResourceService` or `planList`.
  */
 export async function findManyPaginated(
   delegate: ModelDelegate,

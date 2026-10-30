@@ -4,12 +4,14 @@ import {
   type ApprovalActor,
   type ApprovalStatusPatch,
   type ApprovalStatusValue,
-} from "./approval.js"
-import type { OrgRow } from "./prisma-delegate.js"
+} from "../approval/approval.js"
+import type { OrgRow } from "../core/types.js"
 
 /**
  * Shared create payload bits for approvable trade/finance docs.
  * Amount normalization stays in the app via `@plumo/money` — pass already-normalized values.
+ *
+ * @deprecated Use `approvalOnCreate(actor)` inside a `beforeCreate` hook.
  */
 export function mapApprovableCreate(
   data: Record<string, unknown>,
@@ -35,6 +37,7 @@ export function mapApprovableCreate(
   }
 }
 
+/** @deprecated Use `OrgResourceService.updateApproval`. */
 export async function runApprovalUpdate(
   row: OrgRow & { approvalStatus: ApprovalStatusValue },
   next: ApprovalStatusValue,
@@ -47,6 +50,7 @@ export async function runApprovalUpdate(
   })
 }
 
+/** @deprecated Actors are passed as the 3rd argument of create/update. */
 export function withActor(
   data: Record<string, unknown>,
   actor?: ApprovalActor,

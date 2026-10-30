@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { OrgListCache } from "./org-list-cache.js"
-import { OrgCrudService } from "./crud.service.js"
-import { defineResource } from "./resource.js"
-import { createMockDelegate } from "./test-mock-delegate.js"
+import { OrgCrudService } from "../legacy/crud.service.js"
+import { defineResource } from "../resource/resource.js"
+import { createMockDelegate } from "../testing/mock-delegate.js"
 
 describe("OrgListCache", () => {
   it("caches getOrSet until invalidate", async () => {

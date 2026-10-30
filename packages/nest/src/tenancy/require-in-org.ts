@@ -1,5 +1,5 @@
 import { NotFoundException } from "@nestjs/common"
-import type { ModelDelegate, OrgRow } from "./prisma-delegate.js"
+import type { ModelDelegate, OrgRow } from "../core/types.js"
 
 /** Minimal surface for membership checks. */
 export type OrgScopedDelegate = {

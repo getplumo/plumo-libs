@@ -1,6 +1,7 @@
 import { BadRequestException } from "@nestjs/common"
+import type { WhereClause } from "../core/types.js"
 
-export type WhereClause = Record<string, unknown>
+export type { WhereClause }
 
 export type FilterContext = {
   query: Record<string, unknown>
@@ -121,14 +122,28 @@ export const Filter = {
   },
 }
 
+/**
+ * `{ path: "a.b.c" }` → `{ a: { b: { c: leaf } } }` (relation search, e.g.
+ * `deliveryNote.deliveryNoteNumber`). A plain field stays flat.
+ */
+function nestPath(path: string, leaf: unknown): WhereClause {
+  return path
+    .split(".")
+    .reduceRight<unknown>((acc, key) => ({ [key]: acc }), leaf) as WhereClause
+}
+
+/**
+ * Case-insensitive `contains` OR across `fields` (dotted paths allowed).
+ * Blank / non-string `q` is a no-op.
+ */
 export function applySearch(
   where: WhereClause,
-  fields: string[],
+  fields: readonly string[],
   q: unknown,
 ): void {
   const search = typeof q === "string" ? q.trim() : ""
   if (!search || fields.length === 0) return
-  where.OR = fields.map((field) => ({
-    [field]: { contains: search, mode: "insensitive" },
-  }))
+  where.OR = fields.map((field) =>
+    nestPath(field, { contains: search, mode: "insensitive" }),
+  )
 }

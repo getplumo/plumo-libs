@@ -3,9 +3,9 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { OrgCrudService } from "./crud.service.js"
 import { OrgCrudController } from "./crud.controller.js"
-import { defineResource } from "./resource.js"
-import { OrgListCache } from "./org-list-cache.js"
-import { createMockDelegate } from "./test-mock-delegate.js"
+import { defineResource } from "../resource/resource.js"
+import { OrgListCache } from "../cache/org-list-cache.js"
+import { createMockDelegate } from "../testing/mock-delegate.js"
 
 /** Mirrors obs-api-v2 categories.resource + controller wiring. */
 const categoryResource = defineResource({

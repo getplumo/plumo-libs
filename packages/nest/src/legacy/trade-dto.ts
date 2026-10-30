@@ -6,10 +6,12 @@ import {
   IsString,
   Min,
 } from "class-validator"
-import { SortQueryDto } from "./pagination.js"
+import { SortQueryDto } from "../query/pagination.js"
 
 /**
  * Shared Find* query for trade docs (quotes / orders / BL / invoices / returns).
+ *
+ * @deprecated Declare a per-resource Find*QueryDto in the app.
  */
 export class TradeListQueryDto extends SortQueryDto {
   @IsOptional()
@@ -52,7 +54,9 @@ export class TradeListQueryDto extends SortQueryDto {
   orgId?: string
 }
 
-/** Shared line item shape — math stays in @plumo/money. */
+/** Shared line item shape — math stays in @plumo/money. *
+ * @deprecated Declare line-item DTOs in the app.
+ */
 export class CreateTradeLineItemDto {
   @Type(() => Number)
   @IsNumber()

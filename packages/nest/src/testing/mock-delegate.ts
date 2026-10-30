@@ -1,6 +1,15 @@
-import type { ModelDelegate, OrgRow } from "./prisma-delegate.js"
+import type { ModelDelegate, OrgRow } from "../core/types.js"
 
-/** In-memory ModelDelegate for unit tests (not part of public API). */
+/** Prisma P2025-shaped error (record to update/delete not found). */
+export function recordNotFound(): Error & { code: string } {
+  const err = new Error("Record to update not found.") as Error & {
+    code: string
+  }
+  err.code = "P2025"
+  return err
+}
+
+/** In-memory ModelDelegate for unit tests (exported from `@plumo/nest/internal`). */
 export function createMockDelegate(): ModelDelegate & {
   rows: OrgRow[]
 } {
@@ -9,12 +18,24 @@ export function createMockDelegate(): ModelDelegate & {
 
   function match(row: OrgRow, where: Record<string, unknown>): boolean {
     for (const [key, condition] of Object.entries(where)) {
+      if (key === "AND" && Array.isArray(condition)) {
+        if (
+          !condition.every((c) => match(row, c as Record<string, unknown>))
+        ) {
+          return false
+        }
+        continue
+      }
       if (key === "OR" && Array.isArray(condition)) {
         if (
           !condition.some((c) => match(row, c as Record<string, unknown>))
         ) {
           return false
         }
+        continue
+      }
+      if (condition === null) {
+        if (row[key] != null) return false
         continue
       }
       if (
@@ -73,14 +94,14 @@ export function createMockDelegate(): ModelDelegate & {
       return row
     },
     async update({ where, data }) {
-      const row = rows.find((r) => r.id === where.id)
-      if (!row) throw new Error("not found")
+      const row = rows.find((r) => match(r, where))
+      if (!row) throw recordNotFound()
       Object.assign(row, data)
       return row
     },
     async delete({ where }) {
-      const idx = rows.findIndex((r) => r.id === where.id)
-      if (idx < 0) throw new Error("not found")
+      const idx = rows.findIndex((r) => match(r, where))
+      if (idx < 0) throw recordNotFound()
       const [row] = rows.splice(idx, 1)
       return row!
     },
