@@ -277,13 +277,15 @@ type AuthLikeRequest = {
  * Body/query typed as `any` so subclasses can use concrete DTOs without
  * TS2416 (parameter contravariance).
  *
- * Org resolution order:
- * 1. `req.auth.orgId` (Clerk / AuthGuard)
- * 2. `?orgId=` query (local preview / scripts)
+ * The tenant comes ONLY from the verified token (`req.auth.orgId`, set by the
+ * app's auth guard). A client-supplied `?orgId=` is never trusted: it is
+ * stripped from list queries and ignored everywhere else. The `query`
+ * parameters are kept on every handler for backwards compatibility with
+ * subclasses that forward them; they are not used to pick the tenant.
  */
 declare abstract class OrgCrudController {
     protected abstract readonly service: OrgCrudService;
-    protected resolveOrgId(req: AuthLikeRequest, query?: Record<string, unknown>): string;
+    protected resolveOrgId(req: AuthLikeRequest, _query?: Record<string, unknown>): string;
     create(req: AuthLikeRequest, body: any, query: any): Promise<OrgRow>;
     findAll(req: AuthLikeRequest, query: any): Promise<ListResult>;
     findOne(req: AuthLikeRequest, id: number, query: any): Promise<OrgRow>;
@@ -378,22 +380,58 @@ declare class OrgNestedCrudService {
     destroyChild(orgId: string, parentId: number, childId: number): Promise<OrgRow>;
 }
 
-/** Duck-typed Prisma P2002 (no generated client import in the kit). */
+/**
+ * Duck-typed Prisma P2002 (no generated client import in the kit).
+ *
+ * Two shapes exist in the wild:
+ * - classic engine (Prisma <= 6 without driver adapters):
+ *     meta.target = ["orgId", "code"]  or  "orders_orgId_quoteId_key"
+ * - Prisma 7 / driver adapters (@prisma/adapter-pg), observed live:
+ *     meta.modelName = "InvoiceSequence"
+ *     meta.driverAdapterError.cause = {
+ *       originalCode: "23505",
+ *       originalMessage: 'duplicate key value violates unique constraint "invoice_sequences_pkey"',
+ *       kind: "UniqueConstraintViolation",
+ *       constraint: { fields: ['"orgId"', "year"] }   // or { index: "..." }
+ *     }
+ */
 type PrismaUniqueLike = {
     code: string;
     meta?: {
         target?: string | string[];
+        modelName?: string;
+        driverAdapterError?: {
+            cause?: {
+                originalCode?: string;
+                originalMessage?: string;
+                kind?: string;
+                constraint?: {
+                    fields?: string[];
+                    index?: string;
+                } | string;
+            };
+        };
     };
 };
 declare function isPrismaUnique(error: unknown): error is PrismaUniqueLike;
+/**
+ * Column names and/or constraint/index name involved in a P2002, unquoted.
+ * Works with both the classic `meta.target` and the driver-adapter shape.
+ * Example (adapter): ['orgId', 'year', 'invoice_sequences_pkey'].
+ */
 declare function prismaUniqueFields(error: unknown): string[];
+/** True when the P2002 involves `field` (column or constraint-name substring). */
+declare function prismaUniqueIncludes(error: unknown, field: string): boolean;
 /**
  * If `error` is Prisma P2002, throw ConflictException with a field-specific
  * message. Otherwise return (caller should rethrow).
+ * Keys are matched in declaration order, so put the most specific key first.
  */
 declare function mapPrismaUnique(error: unknown, messages: Record<string, string>, fallback?: string): void;
-/** Build a P2002-shaped error (tests / in-memory stores). */
+/** Build a classic P2002-shaped error (tests / in-memory stores). */
 declare function prismaUniqueError(fields: string[]): PrismaUniqueLike & Error;
+/** Build a Prisma-7 driver-adapter P2002 (tests). */
+declare function prismaAdapterUniqueError(fields: string[], constraintName: string, modelName?: string): PrismaUniqueLike & Error;
 
 /**
  * Shared Find* query for trade docs (quotes / orders / BL / invoices / returns).
@@ -420,4 +458,4 @@ declare class UpdateApprovalDto {
     approvalStatus: "pending" | "approved" | "rejected";
 }
 
-export { type ApprovalActor, type ApprovalFields, ApprovalRole, type ApprovalStatusPatch, type ApprovalStatusValue, CreateTradeLineItemDto, DEFAULT_LIMIT, DEFAULT_PAGE, type DefinedResource, type DelegateHost, Filter, type FilterBackend, type FilterContext, type ListCacheConfig, type ListResult, MAX_LIMIT, type ModelDelegate, type NestedResourceConfig, type OrderBy, OrgCrudController, OrgCrudService, OrgListCache, type OrgListCacheOptions, OrgNestedCrudService, type OrgRow, type OrgScopedDelegate, type PaginatedResult, type PaginationMeta, PaginationQueryDto, type PrismaUniqueLike, type ResourceConfig, SortQueryDto, TradeListQueryDto, UpdateApprovalDto, type WhereClause, applyApprovalUpdate, applySearch, approvalOnApprove, approvalOnCreate, buildApprovalStatusPatch, buildWhereFromQuery, canSetApprovalStatus, defaultOrgListCache, defineResource, findManyPaginated, isPrismaUnique, mapApprovableCreate, mapPrismaUnique, paginatedResult, prismaUniqueError, prismaUniqueFields, requireAllRelatedInOrg, requireInOrg, requireInOrgModel, requireRelatedInOrg, resolveOrder, resolvePagination, runApprovalUpdate, withActor };
+export { type ApprovalActor, type ApprovalFields, ApprovalRole, type ApprovalStatusPatch, type ApprovalStatusValue, CreateTradeLineItemDto, DEFAULT_LIMIT, DEFAULT_PAGE, type DefinedResource, type DelegateHost, Filter, type FilterBackend, type FilterContext, type ListCacheConfig, type ListResult, MAX_LIMIT, type ModelDelegate, type NestedResourceConfig, type OrderBy, OrgCrudController, OrgCrudService, OrgListCache, type OrgListCacheOptions, OrgNestedCrudService, type OrgRow, type OrgScopedDelegate, type PaginatedResult, type PaginationMeta, PaginationQueryDto, type PrismaUniqueLike, type ResourceConfig, SortQueryDto, TradeListQueryDto, UpdateApprovalDto, type WhereClause, applyApprovalUpdate, applySearch, approvalOnApprove, approvalOnCreate, buildApprovalStatusPatch, buildWhereFromQuery, canSetApprovalStatus, defaultOrgListCache, defineResource, findManyPaginated, isPrismaUnique, mapApprovableCreate, mapPrismaUnique, paginatedResult, prismaAdapterUniqueError, prismaUniqueError, prismaUniqueFields, prismaUniqueIncludes, requireAllRelatedInOrg, requireInOrg, requireInOrgModel, requireRelatedInOrg, resolveOrder, resolvePagination, runApprovalUpdate, withActor };

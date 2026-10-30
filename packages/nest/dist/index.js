@@ -441,7 +441,6 @@ var OrgCrudService = class {
 
 // src/crud.controller.ts
 import {
-  BadRequestException as BadRequestException2,
   Body,
   Delete,
   Get,
@@ -450,19 +449,16 @@ import {
   Patch,
   Post,
   Query,
-  Req
+  Req,
+  ForbiddenException
 } from "@nestjs/common";
 var OrgCrudController = class {
-  resolveOrgId(req, query = {}) {
+  resolveOrgId(req, _query = {}) {
     const fromAuth = req.auth?.orgId;
     if (typeof fromAuth === "string" && fromAuth.trim()) {
       return fromAuth.trim();
     }
-    const fromQuery = query.orgId;
-    if (typeof fromQuery === "string" && fromQuery.trim()) {
-      return fromQuery.trim();
-    }
-    throw new BadRequestException2("orgId is required");
+    throw new ForbiddenException("Active organization is required");
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   create(req, body, query) {
@@ -530,7 +526,7 @@ __decorateClass([
 ], OrgCrudController.prototype, "remove", 1);
 
 // src/approval.ts
-import { ForbiddenException } from "@nestjs/common";
+import { ForbiddenException as ForbiddenException2 } from "@nestjs/common";
 var ApprovalRole = {
   ADMIN: "org:admin",
   MANAGER: "org:manager",
@@ -567,7 +563,7 @@ function canSetApprovalStatus(orgRole) {
 function buildApprovalStatusPatch(current, next, actor) {
   if (next === current) return null;
   if (!canSetApprovalStatus(actor.orgRole)) {
-    throw new ForbiddenException(
+    throw new ForbiddenException2(
       "Only manager or admin can change approval status"
     );
   }
@@ -696,21 +692,44 @@ import { ConflictException } from "@nestjs/common";
 function isPrismaUnique(error) {
   return typeof error === "object" && error !== null && error.code === "P2002";
 }
+function unquote(value) {
+  return String(value).trim().replace(/^"+|"+$/g, "");
+}
 function prismaUniqueFields(error) {
   if (!isPrismaUnique(error)) return [];
-  const target = error.meta?.target;
-  if (Array.isArray(target)) return target.map(String);
-  if (typeof target === "string") return [target];
-  return [];
+  const meta = error.meta ?? {};
+  const out = [];
+  const target = meta.target;
+  if (Array.isArray(target)) out.push(...target.map(unquote));
+  else if (typeof target === "string") out.push(unquote(target));
+  const cause = meta.driverAdapterError?.cause;
+  const constraint = cause?.constraint;
+  if (typeof constraint === "string") {
+    out.push(unquote(constraint));
+  } else if (constraint) {
+    if (Array.isArray(constraint.fields)) {
+      out.push(...constraint.fields.map(unquote));
+    }
+    if (typeof constraint.index === "string") out.push(unquote(constraint.index));
+  }
+  const message = cause?.originalMessage;
+  if (typeof message === "string") {
+    const match = /constraint "([^"]+)"/.exec(message);
+    if (match?.[1]) out.push(match[1]);
+  }
+  return [...new Set(out.filter(Boolean))];
+}
+function prismaUniqueIncludes(error, field) {
+  return prismaUniqueFields(error).some(
+    (f) => f === field || f.includes(field)
+  );
 }
 function mapPrismaUnique(error, messages, fallback = "Unique constraint violation") {
   if (!isPrismaUnique(error)) return;
   const fields = prismaUniqueFields(error);
-  for (const field of fields) {
-    for (const [key, message] of Object.entries(messages)) {
-      if (field === key || field.includes(key)) {
-        throw new ConflictException(message);
-      }
+  for (const [key, message] of Object.entries(messages)) {
+    if (fields.some((field) => field === key || field.includes(key))) {
+      throw new ConflictException(message);
     }
   }
   throw new ConflictException(fallback);
@@ -721,6 +740,24 @@ function prismaUniqueError(fields) {
   );
   err.code = "P2002";
   err.meta = { target: fields };
+  return err;
+}
+function prismaAdapterUniqueError(fields, constraintName, modelName = "Model") {
+  const err = new Error(
+    "Unique constraint failed on the constraint: `" + constraintName + "`"
+  );
+  err.code = "P2002";
+  err.meta = {
+    modelName,
+    driverAdapterError: {
+      cause: {
+        originalCode: "23505",
+        originalMessage: `duplicate key value violates unique constraint "${constraintName}"`,
+        kind: "UniqueConstraintViolation",
+        constraint: { fields: fields.map((f) => `"${f}"`) }
+      }
+    }
+  };
   return err;
 }
 
@@ -844,8 +881,10 @@ export {
   mapApprovableCreate,
   mapPrismaUnique,
   paginatedResult,
+  prismaAdapterUniqueError,
   prismaUniqueError,
   prismaUniqueFields,
+  prismaUniqueIncludes,
   requireAllRelatedInOrg,
   requireInOrg,
   requireInOrgModel,

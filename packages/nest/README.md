@@ -77,7 +77,7 @@ defineResource({
 })
 ```
 
-`OrgCrudController` reads org from `req.auth.orgId` (Clerk) then `?orgId=`. Override a single handler when permissions differ (e.g. looser `findAll`).
+`OrgCrudController` reads the org **only** from `req.auth.orgId` (set by the app's auth guard from the verified Clerk token) and throws `403 Active organization is required` when it is missing. A client `?orgId=` is stripped and never used. Override a single handler when permissions differ (e.g. looser `findAll`).
 
 Unique conflict in convert/create:
 

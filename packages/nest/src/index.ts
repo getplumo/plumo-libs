@@ -74,8 +74,10 @@ export type { NestedResourceConfig } from "./nested-crud.service.js"
 export {
   isPrismaUnique,
   prismaUniqueFields,
+  prismaUniqueIncludes,
   mapPrismaUnique,
   prismaUniqueError,
+  prismaAdapterUniqueError,
 } from "./map-prisma-unique.js"
 export type { PrismaUniqueLike } from "./map-prisma-unique.js"
 

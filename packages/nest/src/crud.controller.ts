@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Delete,
   Get,
@@ -9,6 +8,7 @@ import {
   Post,
   Query,
   Req,
+  ForbiddenException,
 } from "@nestjs/common"
 import type { OrgCrudService } from "./crud.service.js"
 
@@ -23,26 +23,24 @@ export type AuthLikeRequest = {
  * Body/query typed as `any` so subclasses can use concrete DTOs without
  * TS2416 (parameter contravariance).
  *
- * Org resolution order:
- * 1. `req.auth.orgId` (Clerk / AuthGuard)
- * 2. `?orgId=` query (local preview / scripts)
+ * The tenant comes ONLY from the verified token (`req.auth.orgId`, set by the
+ * app's auth guard). A client-supplied `?orgId=` is never trusted: it is
+ * stripped from list queries and ignored everywhere else. The `query`
+ * parameters are kept on every handler for backwards compatibility with
+ * subclasses that forward them; they are not used to pick the tenant.
  */
 export abstract class OrgCrudController {
   protected abstract readonly service: OrgCrudService
 
   protected resolveOrgId(
     req: AuthLikeRequest,
-    query: Record<string, unknown> = {},
+    _query: Record<string, unknown> = {},
   ): string {
     const fromAuth = req.auth?.orgId
     if (typeof fromAuth === "string" && fromAuth.trim()) {
       return fromAuth.trim()
     }
-    const fromQuery = query.orgId
-    if (typeof fromQuery === "string" && fromQuery.trim()) {
-      return fromQuery.trim()
-    }
-    throw new BadRequestException("orgId is required")
+    throw new ForbiddenException("Active organization is required")
   }
 
   @Post()

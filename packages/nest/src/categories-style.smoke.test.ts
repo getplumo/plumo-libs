@@ -25,7 +25,7 @@ class CategoriesLikeController extends OrgCrudController {
 }
 
 describe("categories-style OrgCrudController", () => {
-  it("CRUD + listMode all + org from auth/query", async () => {
+  it("CRUD + listMode all + org from auth only", async () => {
     const category = createMockDelegate()
     const service = new OrgCrudService(
       { category },
@@ -56,9 +56,13 @@ describe("categories-style OrgCrudController", () => {
     await ctrl.remove(req, created.id as number, {})
     assert.equal((await ctrl.findAll(req, {})).length, 0)
 
-    await ctrl.create({ auth: {} }, { name: "Q", code: "Q1" }, { orgId: "org_q" })
-    const qList = await ctrl.findAll({ auth: {} }, { orgId: "org_q" })
-    assert.ok(Array.isArray(qList))
-    assert.equal(qList.length, 1)
+    await assert.rejects(
+      async () => ctrl.create({ auth: {} }, { name: "Q", code: "Q1" }, { orgId: "org_q" }),
+      (e: unknown) => (e as { status?: number }).status === 403,
+    )
+    await assert.rejects(
+      async () => ctrl.findAll({ auth: {} }, { orgId: "org_q" }),
+      (e: unknown) => (e as { status?: number }).status === 403,
+    )
   })
 })
