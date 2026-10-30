@@ -1,3 +1,6 @@
+// Decorator metadata polyfill: dist reads Reflect.getMetadata at import time.
+import "reflect-metadata"
+
 export {
   PaginationQueryDto,
   SortQueryDto,
@@ -44,8 +47,15 @@ export { OrgCrudService } from "./crud.service.js"
 export type { ListResult } from "./crud.service.js"
 export { OrgCrudController } from "./crud.controller.js"
 
-export { OrgListCache, defaultOrgListCache } from "./org-list-cache.js"
-export type { OrgListCacheOptions } from "./org-list-cache.js"
+export {
+  OrgListCache,
+  defaultOrgListCache,
+  ORG_LIST_CACHE_CONFIG,
+} from "./org-list-cache.js"
+export type {
+  OrgListCacheOptions,
+  OrgListCacheConfig,
+} from "./org-list-cache.js"
 
 export {
   ApprovalRole,

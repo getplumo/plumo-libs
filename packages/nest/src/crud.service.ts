@@ -30,7 +30,12 @@ export class OrgCrudService {
     protected readonly db: DelegateHost,
     protected readonly resource: DefinedResource,
     protected readonly listCache: OrgListCache = defaultOrgListCache,
-  ) {}
+  ) {
+    const cfg = resource.listCache
+    if (cfg?.dependsOn?.length) {
+      listCache.registerDependencies(cfg.scope, cfg.dependsOn)
+    }
+  }
 
   protected get delegate(): ModelDelegate {
     const d = (this.db as Record<string, unknown>)[this.resource.model]

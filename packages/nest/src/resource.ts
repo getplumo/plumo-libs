@@ -5,6 +5,12 @@ export type ListCacheConfig = {
   scope: string
   /** Override default TTL (5 min). */
   ttlMs?: number
+  /**
+   * Scopes whose rows are embedded in this list (e.g. brands include
+   * categories → `dependsOn: ['categories']`). A write that invalidates one
+   * of them also invalidates this scope.
+   */
+  dependsOn?: string[]
 }
 
 export type ResourceConfig = {

@@ -10,6 +10,9 @@ var __decorateClass = (decorators, target, key, kind) => {
 };
 var __decorateParam = (index, decorator) => (target, key) => decorator(target, key, index);
 
+// src/index.ts
+import "reflect-metadata";
+
 // src/pagination.ts
 import { Type } from "class-transformer";
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
@@ -232,13 +235,36 @@ async function requireInOrgModel(delegate, orgId, id, message) {
 }
 
 // src/org-list-cache.ts
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 var DEFAULT_TTL_MS = 5 * 60 * 1e3;
 var MAX_ENTRIES = 500;
+var ORG_LIST_CACHE_CONFIG = /* @__PURE__ */ Symbol("ORG_LIST_CACHE_CONFIG");
 var OrgListCache = class {
   store = /* @__PURE__ */ new Map();
+  /** scope → scopes whose cached lists embed it (e.g. categories → brands). */
+  dependents = /* @__PURE__ */ new Map();
+  defaultTtlMs;
+  maxEntries;
+  enabled;
+  constructor(config = {}) {
+    this.defaultTtlMs = config.defaultTtlMs ?? DEFAULT_TTL_MS;
+    this.maxEntries = config.maxEntries ?? MAX_ENTRIES;
+    this.enabled = config.enabled ?? true;
+  }
+  /**
+   * Declare that lists cached under `scope` embed rows of `dependsOn`
+   * scopes, so invalidating any of those also clears `scope`.
+   */
+  registerDependencies(scope, dependsOn) {
+    for (const parent of dependsOn) {
+      const set = this.dependents.get(parent) ?? /* @__PURE__ */ new Set();
+      set.add(scope);
+      this.dependents.set(parent, set);
+    }
+  }
   async getOrSet(scope, orgId, variant, load, options = {}) {
-    const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    if (!this.enabled) return load();
+    const ttlMs = options.ttlMs ?? this.defaultTtlMs;
     const key = this.key(scope, orgId, variant);
     const hit = this.store.get(key);
     if (hit && hit.expiresAt > Date.now()) {
@@ -250,10 +276,16 @@ var OrgListCache = class {
     this.set(key, value, ttlMs);
     return value;
   }
-  invalidate(scope, orgId) {
+  /** Clears `scope` for `orgId`, plus every scope that depends on it. */
+  invalidate(scope, orgId, seen = /* @__PURE__ */ new Set()) {
+    if (seen.has(scope)) return;
+    seen.add(scope);
     const prefix = `${scope}:${orgId}:`;
     for (const key of this.store.keys()) {
       if (key.startsWith(prefix)) this.store.delete(key);
+    }
+    for (const dependent of this.dependents.get(scope) ?? []) {
+      this.invalidate(dependent, orgId, seen);
     }
   }
   set(key, value, ttlMs) {
@@ -266,7 +298,7 @@ var OrgListCache = class {
     for (const [k, v] of this.store) {
       if (v.expiresAt <= now) this.store.delete(k);
     }
-    while (this.store.size > MAX_ENTRIES) {
+    while (this.store.size > this.maxEntries) {
       const oldest = this.store.keys().next().value;
       if (oldest === void 0) break;
       this.store.delete(oldest);
@@ -277,7 +309,9 @@ var OrgListCache = class {
   }
 };
 OrgListCache = __decorateClass([
-  Injectable()
+  Injectable(),
+  __decorateParam(0, Optional()),
+  __decorateParam(0, Inject(ORG_LIST_CACHE_CONFIG))
 ], OrgListCache);
 var defaultOrgListCache = new OrgListCache();
 function stableJson(value) {
@@ -298,6 +332,10 @@ var OrgCrudService = class {
     this.db = db;
     this.resource = resource;
     this.listCache = listCache;
+    const cfg = resource.listCache;
+    if (cfg?.dependsOn?.length) {
+      listCache.registerDependencies(cfg.scope, cfg.dependsOn);
+    }
   }
   db;
   resource;
@@ -859,6 +897,7 @@ export {
   DEFAULT_PAGE,
   Filter,
   MAX_LIMIT,
+  ORG_LIST_CACHE_CONFIG,
   OrgCrudController,
   OrgCrudService,
   OrgListCache,

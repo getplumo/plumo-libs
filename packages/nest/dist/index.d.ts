@@ -69,6 +69,12 @@ type ListCacheConfig = {
     scope: string;
     /** Override default TTL (5 min). */
     ttlMs?: number;
+    /**
+     * Scopes whose rows are embedded in this list (e.g. brands include
+     * categories → `dependsOn: ['categories']`). A write that invalidates one
+     * of them also invalidates this scope.
+     */
+    dependsOn?: string[];
 };
 type ResourceConfig = {
     /** Logical model name (also key on PrismaService), e.g. 'product'. */
@@ -198,14 +204,40 @@ declare function requireInOrgModel(delegate: ModelDelegate, orgId: string, id: n
 type OrgListCacheOptions = {
     ttlMs?: number;
 };
+/** Optional DI token: `{ provide: ORG_LIST_CACHE_CONFIG, useValue: {...} }`. */
+declare const ORG_LIST_CACHE_CONFIG: unique symbol;
+type OrgListCacheConfig = {
+    /** Default TTL for every scope (5 min). Per-resource `ttlMs` still wins. */
+    defaultTtlMs?: number;
+    /** Max entries before LRU eviction (500). */
+    maxEntries?: number;
+    /** `false` turns the cache into a pass-through (e.g. >1 API instance). */
+    enabled?: boolean;
+};
 /**
  * In-memory org-scoped list cache.
  * Opt-in via defineResource({ listCache: { scope } }) — CUD auto-invalidates.
+ *
+ * PER PROCESS: with more than one API instance, other replicas keep serving
+ * their own copy until TTL expiry. Run a single instance, use a short TTL, or
+ * construct it with `{ enabled: false }`.
  */
 declare class OrgListCache {
     private readonly store;
+    /** scope → scopes whose cached lists embed it (e.g. categories → brands). */
+    private readonly dependents;
+    private readonly defaultTtlMs;
+    private readonly maxEntries;
+    private readonly enabled;
+    constructor(config?: OrgListCacheConfig);
+    /**
+     * Declare that lists cached under `scope` embed rows of `dependsOn`
+     * scopes, so invalidating any of those also clears `scope`.
+     */
+    registerDependencies(scope: string, dependsOn: readonly string[]): void;
     getOrSet<T>(scope: string, orgId: string, variant: unknown, load: () => Promise<T>, options?: OrgListCacheOptions): Promise<T>;
-    invalidate(scope: string, orgId: string): void;
+    /** Clears `scope` for `orgId`, plus every scope that depends on it. */
+    invalidate(scope: string, orgId: string, seen?: Set<string>): void;
     private set;
     private evict;
     private key;
@@ -458,4 +490,4 @@ declare class UpdateApprovalDto {
     approvalStatus: "pending" | "approved" | "rejected";
 }
 
-export { type ApprovalActor, type ApprovalFields, ApprovalRole, type ApprovalStatusPatch, type ApprovalStatusValue, CreateTradeLineItemDto, DEFAULT_LIMIT, DEFAULT_PAGE, type DefinedResource, type DelegateHost, Filter, type FilterBackend, type FilterContext, type ListCacheConfig, type ListResult, MAX_LIMIT, type ModelDelegate, type NestedResourceConfig, type OrderBy, OrgCrudController, OrgCrudService, OrgListCache, type OrgListCacheOptions, OrgNestedCrudService, type OrgRow, type OrgScopedDelegate, type PaginatedResult, type PaginationMeta, PaginationQueryDto, type PrismaUniqueLike, type ResourceConfig, SortQueryDto, TradeListQueryDto, UpdateApprovalDto, type WhereClause, applyApprovalUpdate, applySearch, approvalOnApprove, approvalOnCreate, buildApprovalStatusPatch, buildWhereFromQuery, canSetApprovalStatus, defaultOrgListCache, defineResource, findManyPaginated, isPrismaUnique, mapApprovableCreate, mapPrismaUnique, paginatedResult, prismaAdapterUniqueError, prismaUniqueError, prismaUniqueFields, prismaUniqueIncludes, requireAllRelatedInOrg, requireInOrg, requireInOrgModel, requireRelatedInOrg, resolveOrder, resolvePagination, runApprovalUpdate, withActor };
+export { type ApprovalActor, type ApprovalFields, ApprovalRole, type ApprovalStatusPatch, type ApprovalStatusValue, CreateTradeLineItemDto, DEFAULT_LIMIT, DEFAULT_PAGE, type DefinedResource, type DelegateHost, Filter, type FilterBackend, type FilterContext, type ListCacheConfig, type ListResult, MAX_LIMIT, type ModelDelegate, type NestedResourceConfig, ORG_LIST_CACHE_CONFIG, type OrderBy, OrgCrudController, OrgCrudService, OrgListCache, type OrgListCacheConfig, type OrgListCacheOptions, OrgNestedCrudService, type OrgRow, type OrgScopedDelegate, type PaginatedResult, type PaginationMeta, PaginationQueryDto, type PrismaUniqueLike, type ResourceConfig, SortQueryDto, TradeListQueryDto, UpdateApprovalDto, type WhereClause, applyApprovalUpdate, applySearch, approvalOnApprove, approvalOnCreate, buildApprovalStatusPatch, buildWhereFromQuery, canSetApprovalStatus, defaultOrgListCache, defineResource, findManyPaginated, isPrismaUnique, mapApprovableCreate, mapPrismaUnique, paginatedResult, prismaAdapterUniqueError, prismaUniqueError, prismaUniqueFields, prismaUniqueIncludes, requireAllRelatedInOrg, requireInOrg, requireInOrgModel, requireRelatedInOrg, resolveOrder, resolvePagination, runApprovalUpdate, withActor };

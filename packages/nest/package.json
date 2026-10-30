@@ -31,7 +31,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/plumo/plumo-libs.git",
+    "url": "https://github.com/lasriholding/plumo-libs.git",
     "directory": "packages/nest"
   },
   "license": "UNLICENSED",
