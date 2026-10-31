@@ -58,11 +58,33 @@ export type WriteContext<TRow, TTx = DelegateHost> = {
    */
   tx: TTx
   /**
-   * Register work to run right after the row is written, inside the same
+   * Register work to run right after the row is written, **inside** the same
    * transaction (e.g. stock moves, cache tables). Runs before `after*` hooks.
+   * A throw here rolls the whole write back (when `transactional`) and is
+   * returned to the client. Not for side effects that must only happen once
+   * the data is durable — use `afterCommit` for those.
    */
   afterWrite(fn: (row: TRow) => void | Promise<void>): void
+  /**
+   * Register work to run only once the write is durable (audit logs,
+   * notifications, webhooks, outbox kicks):
+   * - `transactional: true` → after `$transaction` resolves (committed);
+   *   never runs if the transaction rolls back.
+   * - otherwise → after the write and its hooks; if a later hook throws, the
+   *   row is already persisted, so callbacks registered up to that point
+   *   still run (the client still gets the hook's error).
+   *
+   * Callbacks run in registration order, after the list cache is
+   * invalidated and before the response is returned (awaited). They get the
+   * written row (as returned by Prisma, before `presentOne`). Errors are
+   * logged (Nest `Logger`, context = service class) and swallowed — they
+   * never fail the request. Use `this.db`, not `ctx.tx` (the tx is closed).
+   */
+  afterCommit(fn: AfterCommitFn<TRow>): void
 }
+
+/** Callback registered with `ctx.afterCommit`. */
+export type AfterCommitFn<TRow> = (row: TRow) => void | Promise<void>
 
 export type CreateContext<TRow, TTx = DelegateHost> = WriteContext<TRow, TTx> & { action: "create" }
 

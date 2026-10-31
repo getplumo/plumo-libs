@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { ForbiddenException } from "@nestjs/common"
+import { BadRequestException, ForbiddenException } from "@nestjs/common"
 import {
   ApprovalRole,
   approvalOnCreate,
@@ -62,5 +62,18 @@ describe("applyApprovalUpdate", () => {
     )
     assert.equal(next.approvalStatus, "approved")
     assert.equal(next.approvedBy, "mgr")
+  })
+})
+
+describe("approval status validation (fix #2)", () => {
+  it("unknown / missing status → 400, even for an admin and even when unchanged", () => {
+    const admin = { userId: "a", orgRole: ApprovalRole.ADMIN }
+    for (const bad of ["archived", "", "APPROVED", undefined, null, 1]) {
+      assert.throws(
+        () => buildApprovalStatusPatch("pending", bad as never, admin),
+        (e: unknown) => e instanceof BadRequestException,
+        String(bad),
+      )
+    }
   })
 })

@@ -1,6 +1,6 @@
 {
   "name": "@plumo/nest",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DRF-like Nest org-scoped CRUD: resources, filters, approvals, nested children",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -18,7 +18,7 @@
       "require": "./dist/internal.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "README.md", "CHANGELOG.md"],
   "scripts": {
     "build": "tsup src/index.ts src/internal.ts --format esm,cjs --dts --clean --external @nestjs/common --external class-validator --external class-transformer",
     "typecheck": "tsc -p tsconfig.json --noEmit",

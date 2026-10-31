@@ -25,10 +25,13 @@ function andMerge(where: WhereClause, extra: WhereClause): void {
 
 /** Built-in strategies. Services can add their own via `queryStrategies()`. */
 export const QueryStrategies = {
-  /** `?q=` (or `?{param}=`) → OR of case-insensitive contains. */
-  search(fields: readonly string[], param = "q"): QueryStrategy {
+  /**
+   * `?q=` (or `?{param}=`) → OR of `contains` (case-insensitive by default;
+   * `insensitive: false` drops Prisma's Postgres-only `mode`).
+   */
+  search(fields: readonly string[], param = "q", insensitive = true): QueryStrategy {
     return ({ query, where }) => {
-      applySearch(where, fields, query[param] ?? query.q)
+      applySearch(where, fields, query[param] ?? query.q, insensitive)
     }
   },
 
@@ -60,7 +63,13 @@ export const QueryStrategies = {
 export function strategiesFor(resource: DefinedResource): QueryStrategy[] {
   const out: QueryStrategy[] = []
   if (resource.search?.length) {
-    out.push(QueryStrategies.search(resource.search, resource.searchParam ?? "q"))
+    out.push(
+      QueryStrategies.search(
+        resource.search,
+        resource.searchParam ?? "q",
+        resource.searchCaseInsensitive !== false,
+      ),
+    )
   }
   if (resource.filters) {
     out.push(

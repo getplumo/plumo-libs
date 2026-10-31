@@ -65,3 +65,30 @@ describe("query pipeline", () => {
     assert.equal(plan.limit, 10)
   })
 })
+
+describe("0.2.1 searchCaseInsensitive (fix #4)", () => {
+  it("default keeps Postgres mode: insensitive", () => {
+    const r = defineResource({ model: "x", search: ["name"] })
+    assert.deepEqual(buildListWhere(r, "o", { q: "Ab" }).OR, [
+      { name: { contains: "Ab", mode: "insensitive" } },
+    ])
+  })
+
+  it("searchCaseInsensitive: false drops mode (MySQL/SQLite)", () => {
+    const r = defineResource({ model: "x", search: ["name", "company.name"], searchCaseInsensitive: false })
+    assert.deepEqual(buildListWhere(r, "o", { q: "Ab" }).OR, [
+      { name: { contains: "Ab" } },
+      { company: { name: { contains: "Ab" } } },
+    ])
+  })
+
+  it("strategiesFor is exported from the package entry", async () => {
+    const mod = await import("../index.js")
+    assert.equal(typeof mod.strategiesFor, "function")
+    const r = defineResource({ model: "x", search: ["name"], searchCaseInsensitive: false })
+    assert.deepEqual(mod.runStrategies(mod.strategiesFor(r), "o", { q: "a" }), {
+      OR: [{ name: { contains: "a" } }],
+      orgId: "o",
+    })
+  })
+})

@@ -1,6 +1,31 @@
-import { ForbiddenException } from "@nestjs/common"
+import { BadRequestException, ForbiddenException } from "@nestjs/common"
 
 export type ApprovalStatusValue = "pending" | "approved" | "rejected"
+
+/** The only accepted approval statuses. */
+export const APPROVAL_STATUSES: readonly ApprovalStatusValue[] = [
+  "pending",
+  "approved",
+  "rejected",
+]
+
+export function isApprovalStatus(value: unknown): value is ApprovalStatusValue {
+  return (
+    typeof value === "string" &&
+    (APPROVAL_STATUSES as readonly string[]).includes(value)
+  )
+}
+
+/** 400 unless `value` is pending / approved / rejected (works without a DTO). */
+export function assertApprovalStatus(
+  value: unknown,
+): asserts value is ApprovalStatusValue {
+  if (!isApprovalStatus(value)) {
+    throw new BadRequestException(
+      `approvalStatus must be one of: ${APPROVAL_STATUSES.join(", ")}`,
+    )
+  }
+}
 
 export type ApprovalActor = {
   userId: string
@@ -68,13 +93,15 @@ export function canSetApprovalStatus(orgRole?: string | null): boolean {
 
 /**
  * Build DB patch for an approval status change.
- * Returns null when status is unchanged. Throws if actor cannot approve.
+ * Throws 400 when `next` is not pending/approved/rejected.
+ * Returns null when status is unchanged. Throws 403 if actor cannot approve.
  */
 export function buildApprovalStatusPatch(
   current: ApprovalStatusValue,
   next: ApprovalStatusValue,
   actor: ApprovalActor,
 ): ApprovalStatusPatch | null {
+  assertApprovalStatus(next)
   if (next === current) return null
   if (!canSetApprovalStatus(actor.orgRole)) {
     throw new ForbiddenException(

@@ -1,6 +1,6 @@
-import { O as OrgRow, M as ModelDelegate, D as DelegateHost, A as Actor, L as ListQuery, a as DefinedResource, I as IncludeOn, Q as QueryStrategy, W as WhereClause } from './unique-DxUVjgb_.cjs';
-export { F as FieldOf, b as Filter, c as FilterBackend, d as FilterContext, e as ListCacheConfig, f as ListPlan, g as OrderBy, P as PrismaUniqueLike, h as QueryContext, i as QueryStrategies, R as RelationRule, j as ResourceConfig, k as ResourceDefinition, S as SearchPath, l as SoftDeleteConfig, m as SortDirection, T as TransactionHost, U as UniqueConfig, n as applySearch, o as buildListWhere, p as buildWhereFromQuery, q as defineResource, r as delegateOf, s as includeFor, t as isPrismaUnique, u as mapPrismaUnique, v as planList, w as prismaAdapterUniqueError, x as prismaUniqueError, y as prismaUniqueFields, z as prismaUniqueIncludes, B as resolveOrder } from './unique-DxUVjgb_.cjs';
-import { Type } from '@nestjs/common';
+import { O as OrgRow, M as ModelDelegate, D as DelegateHost, A as Actor, L as ListQuery, a as DefinedResource, I as IncludeOn, Q as QueryStrategy, W as WhereClause } from './unique-CbQBBGrc.cjs';
+export { E as ExactFilterOptions, F as FieldOf, b as Filter, c as FilterBackend, d as FilterContext, e as FilterValueType, f as InListFilterOptions, g as ListCacheConfig, h as ListPlan, i as OrderBy, P as PrismaUniqueLike, j as QueryContext, k as QueryStrategies, R as RangeFilterOptions, l as RelationRule, m as ResourceConfig, n as ResourceDefinition, S as SearchPath, o as SoftDeleteConfig, p as SortDirection, T as TransactionHost, U as UniqueConfig, q as UniqueConflictBody, r as applySearch, s as buildListWhere, t as buildWhereFromQuery, u as coerceFilterValue, v as defineResource, w as delegateOf, x as includeFor, y as isPrismaUnique, z as mapPrismaUnique, B as planList, C as prismaAdapterUniqueError, G as prismaUniqueColumns, H as prismaUniqueConstraints, J as prismaUniqueError, K as prismaUniqueFields, N as prismaUniqueIncludes, V as prismaUniqueMatches, X as resolveOrder, Y as runStrategies, Z as strategiesFor } from './unique-CbQBBGrc.cjs';
+import { Logger, Type } from '@nestjs/common';
 
 /**
  * Decimal-safe numeric helpers. Prisma returns `Decimal` objects (decimal.js)
@@ -95,6 +95,11 @@ declare const CurrentOrgId: (...dataOrPipes: unknown[]) => ParameterDecorator;
 declare const CurrentActor: (...dataOrPipes: unknown[]) => ParameterDecorator;
 
 type ApprovalStatusValue = "pending" | "approved" | "rejected";
+/** The only accepted approval statuses. */
+declare const APPROVAL_STATUSES: readonly ApprovalStatusValue[];
+declare function isApprovalStatus(value: unknown): value is ApprovalStatusValue;
+/** 400 unless `value` is pending / approved / rejected (works without a DTO). */
+declare function assertApprovalStatus(value: unknown): asserts value is ApprovalStatusValue;
 type ApprovalActor = {
     userId: string;
     orgRole?: string | null;
@@ -126,7 +131,8 @@ declare function approvalOnApprove(approverUserId: string): {
 declare function canSetApprovalStatus(orgRole?: string | null): boolean;
 /**
  * Build DB patch for an approval status change.
- * Returns null when status is unchanged. Throws if actor cannot approve.
+ * Throws 400 when `next` is not pending/approved/rejected.
+ * Returns null when status is unchanged. Throws 403 if actor cannot approve.
  */
 declare function buildApprovalStatusPatch(current: ApprovalStatusValue, next: ApprovalStatusValue, actor: ApprovalActor): ApprovalStatusPatch | null;
 type ApprovalRow = {
@@ -231,11 +237,32 @@ type WriteContext<TRow, TTx = DelegateHost> = {
      */
     tx: TTx;
     /**
-     * Register work to run right after the row is written, inside the same
+     * Register work to run right after the row is written, **inside** the same
      * transaction (e.g. stock moves, cache tables). Runs before `after*` hooks.
+     * A throw here rolls the whole write back (when `transactional`) and is
+     * returned to the client. Not for side effects that must only happen once
+     * the data is durable — use `afterCommit` for those.
      */
     afterWrite(fn: (row: TRow) => void | Promise<void>): void;
+    /**
+     * Register work to run only once the write is durable (audit logs,
+     * notifications, webhooks, outbox kicks):
+     * - `transactional: true` → after `$transaction` resolves (committed);
+     *   never runs if the transaction rolls back.
+     * - otherwise → after the write and its hooks; if a later hook throws, the
+     *   row is already persisted, so callbacks registered up to that point
+     *   still run (the client still gets the hook's error).
+     *
+     * Callbacks run in registration order, after the list cache is
+     * invalidated and before the response is returned (awaited). They get the
+     * written row (as returned by Prisma, before `presentOne`). Errors are
+     * logged (Nest `Logger`, context = service class) and swallowed — they
+     * never fail the request. Use `this.db`, not `ctx.tx` (the tx is closed).
+     */
+    afterCommit(fn: AfterCommitFn<TRow>): void;
 };
+/** Callback registered with `ctx.afterCommit`. */
+type AfterCommitFn<TRow> = (row: TRow) => void | Promise<void>;
 type CreateContext<TRow, TTx = DelegateHost> = WriteContext<TRow, TTx> & {
     action: "create";
 };
@@ -300,7 +327,10 @@ type ApprovalInput = {
  * - `orgId` / `id` in a write payload are stripped (no tenant hopping);
  * - unknown / other-org ids → 404 `notFoundMessage` before any write;
  * - with `transactional: true` the hooks and the write share `ctx.tx`;
- * - P2002 → 409 via `resource.unique`; list cache invalidated after writes.
+ * - P2002 → 409 via `resource.unique`; list cache invalidated after writes;
+ * - `ctx.afterWrite(fn)` runs inside the write/transaction (a throw rolls
+ *   back); `ctx.afterCommit(fn)` runs only once the write is durable, and its
+ *   errors are logged, not returned to the client.
  */
 declare class OrgResourceService<T extends ResourceTypes = {
     row: OrgRow;
@@ -334,7 +364,8 @@ declare class OrgResourceService<T extends ResourceTypes = {
     /** Returns the deleted row (not presented), like 0.1. */
     destroy(orgId: string, id: number, actor?: Actor): Promise<RowOf<T>>;
     /**
-     * Approval workflow (`PATCH :id/approval`). Unchanged status → returns the
+     * Approval workflow (`PATCH :id/approval`). Status other than
+     * pending/approved/rejected → 400. Unchanged status → returns the
      * current row (no write). Otherwise checks the actor role (403), runs
      * `beforeApproval`, writes the patch and `afterApproval`.
      */
@@ -342,9 +373,18 @@ declare class OrgResourceService<T extends ResourceTypes = {
     /**
      * Shared write runner: builds the context, opens the transaction when the
      * resource is transactional, runs `afterWrite` callbacks + the after hook,
-     * maps unique errors and invalidates the list cache on success.
+     * maps unique errors, invalidates the list cache once the write is durable
+     * and then runs `afterCommit` callbacks (errors logged, never thrown).
+     *
+     * Non-transactional: if a hook throws after the row was written, the row
+     * stays persisted, so the list cache (+ dependants) is still invalidated
+     * and the registered `afterCommit` callbacks still run before rethrowing.
      */
     protected runWrite<C extends WriteContext<RowOf<T>, TxOf<T>>>(action: WriteAction, orgId: string, actor: Actor | undefined, extra: Omit<C, keyof WriteContext<RowOf<T>, TxOf<T>> | "action">, write: (ctx: C) => Promise<RowOf<T>>, after: (row: RowOf<T>, ctx: C) => Hook<void>): Promise<RowOf<T>>;
+    /** Logger for `afterCommit` failures (override to plug your own). */
+    protected readonly afterCommitLogger: Logger;
+    /** Run `afterCommit` callbacks in order; log and swallow their errors. */
+    protected runAfterCommit(fns: readonly AfterCommitFn<RowOf<T>>[], row: RowOf<T>, action: WriteAction): Promise<void>;
     /** P2002 → 409 per `resource.unique` (only for the configured actions). */
     protected mapWriteError(error: unknown, action: WriteAction): void;
     /** Declarative FK membership checks (`resource.relations`). */
@@ -625,4 +665,4 @@ declare class UpdateApprovalDto {
     approvalStatus: "pending" | "approved" | "rejected";
 }
 
-export { Actor, type ApprovalActor, type ApprovalChange, type ApprovalContext, type ApprovalFields, type ApprovalInput, ApprovalRole, type ApprovalStatusPatch, type ApprovalStatusValue, type AuthLike, type CreateContext, type CreateOf, CreateTradeLineItemDto, CurrentActor, CurrentOrgId, DEFAULT_LIMIT, DEFAULT_PAGE, type DecimalLike, DefinedResource, DelegateHost, type DestroyContext, IncludeOn, type ListContext, type ListItemOf, ListQuery, type ListResult, MAX_LIMIT, ModelDelegate, type NestedResourceConfig, ORG_LIST_CACHE_CONFIG, OrgCrudController, OrgCrudService, OrgListCache, type OrgListCacheConfig, type OrgListCacheOptions, OrgNestedCrudService, OrgResourceController, type OrgResourceControllerBase, type OrgResourceControllerOptions, OrgResourceService, OrgRow, type OrgScopedDelegate, type OutputOf, type PaginatedResult, type PaginationMeta, PaginationQueryDto, type PresentAction, type PresentContext, QueryStrategy, RESOURCE_ROUTE_METHOD, type RequestContext, type ResourceList, type ResourceRoute, type ResourceServiceLike, type ResourceTypes, type RouteOptions, type RowOf, SortQueryDto, TradeListQueryDto, type TxOf, UpdateApprovalDto, type UpdateContext, type UpdateOf, WhereClause, type WriteAction, type WriteContext, type WriteData, applyApprovalUpdate, approvalOnApprove, approvalOnCreate, buildApprovalStatusPatch, canSetApprovalStatus, defaultOrgListCache, findManyPaginated, fromCents, mapApprovableCreate, orgIdFromAuth, paginatedResult, requireAllRelatedInOrg, requireInOrg, requireInOrgModel, requireRelatedInOrg, resolvePagination, runApprovalUpdate, sumMoney, toCents, toNumber, withActor };
+export { APPROVAL_STATUSES, Actor, type AfterCommitFn, type ApprovalActor, type ApprovalChange, type ApprovalContext, type ApprovalFields, type ApprovalInput, ApprovalRole, type ApprovalStatusPatch, type ApprovalStatusValue, type AuthLike, type CreateContext, type CreateOf, CreateTradeLineItemDto, CurrentActor, CurrentOrgId, DEFAULT_LIMIT, DEFAULT_PAGE, type DecimalLike, DefinedResource, DelegateHost, type DestroyContext, IncludeOn, type ListContext, type ListItemOf, ListQuery, type ListResult, MAX_LIMIT, ModelDelegate, type NestedResourceConfig, ORG_LIST_CACHE_CONFIG, OrgCrudController, OrgCrudService, OrgListCache, type OrgListCacheConfig, type OrgListCacheOptions, OrgNestedCrudService, OrgResourceController, type OrgResourceControllerBase, type OrgResourceControllerOptions, OrgResourceService, OrgRow, type OrgScopedDelegate, type OutputOf, type PaginatedResult, type PaginationMeta, PaginationQueryDto, type PresentAction, type PresentContext, QueryStrategy, RESOURCE_ROUTE_METHOD, type RequestContext, type ResourceList, type ResourceRoute, type ResourceServiceLike, type ResourceTypes, type RouteOptions, type RowOf, SortQueryDto, TradeListQueryDto, type TxOf, UpdateApprovalDto, type UpdateContext, type UpdateOf, WhereClause, type WriteAction, type WriteContext, type WriteData, applyApprovalUpdate, approvalOnApprove, approvalOnCreate, assertApprovalStatus, buildApprovalStatusPatch, canSetApprovalStatus, defaultOrgListCache, findManyPaginated, fromCents, isApprovalStatus, mapApprovableCreate, orgIdFromAuth, paginatedResult, requireAllRelatedInOrg, requireInOrg, requireInOrgModel, requireRelatedInOrg, resolvePagination, runApprovalUpdate, sumMoney, toCents, toNumber, withActor };

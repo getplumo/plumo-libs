@@ -81,32 +81,77 @@ type FilterBackend = {
     apply(ctx: FilterContext): void;
 };
 /**
+ * Declared type of a filter value. Query strings arrive as strings when no
+ * transforming DTO is used, so typed filters coerce (and validate) them:
+ * an invalid value is a 400, never a Prisma 500.
+ */
+type FilterValueType = "string" | "number" | "int" | "boolean" | "date";
+/**
+ * Coerce one query value to `type`. Throws 400 (BadRequestException) on
+ * invalid input. `undefined` type → value returned untouched (0.2.0 behaviour).
+ */
+declare function coerceFilterValue(value: unknown, type: FilterValueType | undefined, label: string): unknown;
+type ExactFilterOptions = {
+    /** Query key (default: the filter's field name). */
+    key?: string;
+    /** Coerce + validate the value (default: passed through untouched). */
+    type?: FilterValueType;
+};
+type RangeFilterOptions = {
+    /** `int` rejects decimals (default `number`). */
+    type?: "number" | "int";
+};
+type InListFilterOptions = {
+    key?: string;
+    /** Coerce + validate every list item. */
+    type?: FilterValueType;
+};
+/**
  * Declarative filters (DRF / django-filter style).
  *
  * In defineResource:
  *   filters: {
- *     brandId: Filter.exact(),
+ *     brandId: Filter.exact({ type: 'int' }),      // '?brandId=3' → 3, 'abc' → 400
+ *     isActive: Filter.exact({ type: 'boolean' }), // 'true' / 'false' / 1 / 0
  *     sellPrice: Filter.numberRange('minPrice', 'maxPrice'),
  *     createdAt: Filter.dateRange('createdAtFrom', 'createdAtTo'),
  *   }
  *   search: ['name', 'description']  // wired separately as q=
+ *
+ * Invalid input (bad number / date / boolean, min > max) → 400.
  */
 declare const Filter: {
-    /** `?brandId=3` when key is `brandId` → `{ brandId: 3 }` */
-    exact(queryKey?: string): FilterBackend;
-    /** `?minPrice=&maxPrice=` → `{ [field]: { gte, lte } }` */
-    numberRange(minKey: string, maxKey: string): FilterBackend;
-    /** `?createdAtFrom=&createdAtTo=` → UTC day bounds */
+    /**
+     * `?brandId=3` when key is `brandId` → `{ brandId: 3 }`.
+     * Accepts `exact()`, `exact('queryKey')`, `exact('queryKey', 'int')` or
+     * `exact({ key?, type? })`. Without `type` the raw value is used (rely on a
+     * transforming DTO); with `type` it is coerced and validated (400).
+     */
+    exact(keyOrOptions?: string | ExactFilterOptions, type?: FilterValueType): FilterBackend;
+    /**
+     * `?minPrice=&maxPrice=` → `{ [field]: { gte, lte } }`. Values are always
+     * coerced to numbers; a non-numeric value or min > max → 400.
+     */
+    numberRange(minKey: string, maxKey: string, options?: RangeFilterOptions): FilterBackend;
+    /** `?createdAtFrom=&createdAtTo=` → UTC day bounds. Invalid date → 400. */
     dateRange(fromKey: string, toKey: string): FilterBackend;
-    /** `?status=a,b` or array → `{ [field]: { in: [...] } }` */
-    inList(queryKey?: string): FilterBackend;
+    /**
+     * `?status=a,b` or array → `{ [field]: { in: [...] } }`.
+     * Accepts `inList()`, `inList('queryKey')`, `inList('queryKey', 'int')` or
+     * `inList({ key?, type? })`; with `type` every item is coerced (400).
+     */
+    inList(keyOrOptions?: string | InListFilterOptions, type?: FilterValueType): FilterBackend;
     custom(fn: (ctx: FilterContext) => void): FilterBackend;
 };
 /**
- * Case-insensitive `contains` OR across `fields` (dotted paths allowed).
- * Blank / non-string `q` is a no-op.
+ * `contains` OR across `fields` (dotted paths allowed). Blank / non-string
+ * `q` is a no-op.
+ *
+ * `insensitive` (default true) adds Prisma's `mode: "insensitive"`, which is
+ * only supported on PostgreSQL / MongoDB. Pass `false` for MySQL / SQLite /
+ * SQL Server (case sensitivity then follows the column collation).
  */
-declare function applySearch(where: WhereClause, fields: readonly string[], q: unknown): void;
+declare function applySearch(where: WhereClause, fields: readonly string[], q: unknown, insensitive?: boolean): void;
 
 type ListCacheConfig = {
     /** Cache scope key, e.g. 'brands' — invalidate uses same scope. */
@@ -147,7 +192,13 @@ type IncludeOn = {
     approval?: boolean;
 };
 type UniqueConfig = {
-    /** Field (or constraint-name substring) → 409 message; first match wins. */
+    /**
+     * Key → 409 message; first match wins. A key matches when it is exactly
+     * one of the conflicting columns (`'code'`), a comma-separated set of
+     * columns that all conflict (`'orgId,code'`), or the exact constraint /
+     * index name (`'products_orgId_code_key'`). No substring matching:
+     * `name` does not match `displayName`.
+     */
     messages?: Record<string, string>;
     /** 409 message when no key matches (default: generic). */
     fallback?: string;
@@ -170,6 +221,12 @@ type ResourceDefinition<TRow extends object = Record<string, unknown>> = {
     search?: ReadonlyArray<SearchPath<TRow>>;
     /** Query key for search (default `q`, `?q=` is always accepted too). */
     searchParam?: string;
+    /**
+     * Case-insensitive search via Prisma `mode: "insensitive"` (default `true`,
+     * PostgreSQL / MongoDB only). Set `false` on MySQL / SQLite / SQL Server,
+     * where Prisma rejects `mode`; matching then follows the column collation.
+     */
+    searchCaseInsensitive?: boolean;
     /** Map of query param → filter backend (keys may be relation ids or aliases). */
     filters?: Record<string, FilterBackend>;
     /** Whitelist for `?sortBy=`. Anything else falls back to `defaultOrder`. */
@@ -228,8 +285,11 @@ type QueryContext = {
 type QueryStrategy = (ctx: QueryContext) => void;
 /** Built-in strategies. Services can add their own via `queryStrategies()`. */
 declare const QueryStrategies: {
-    /** `?q=` (or `?{param}=`) → OR of case-insensitive contains. */
-    readonly search: (fields: readonly string[], param?: string) => QueryStrategy;
+    /**
+     * `?q=` (or `?{param}=`) → OR of `contains` (case-insensitive by default;
+     * `insensitive: false` drops Prisma's Postgres-only `mode`).
+     */
+    readonly search: (fields: readonly string[], param?: string, insensitive?: boolean) => QueryStrategy;
     /** Declarative filter backends keyed by prisma field. */
     readonly filters: (map: Partial<Record<string, FilterBackend>>) => QueryStrategy;
     /** Hide soft-deleted rows. */
@@ -296,18 +356,45 @@ type PrismaUniqueLike = {
     };
 };
 declare function isPrismaUnique(error: unknown): error is PrismaUniqueLike;
+/** Column names reported by a P2002 (classic `meta.target` array or adapter `constraint.fields`), unquoted. */
+declare function prismaUniqueColumns(error: unknown): string[];
+/** Constraint / index names reported by a P2002 (e.g. `orders_orgId_quoteId_key`). */
+declare function prismaUniqueConstraints(error: unknown): string[];
 /**
  * Column names and/or constraint/index name involved in a P2002, unquoted.
  * Works with both the classic `meta.target` and the driver-adapter shape.
  * Example (adapter): ['orgId', 'year', 'invoice_sequences_pkey'].
  */
 declare function prismaUniqueFields(error: unknown): string[];
-/** True when the P2002 involves `field` (column or constraint-name substring). */
-declare function prismaUniqueIncludes(error: unknown, field: string): boolean;
 /**
- * If `error` is Prisma P2002, throw ConflictException with a field-specific
- * message. Otherwise return (caller should rethrow).
- * Keys are matched in declaration order, so put the most specific key first.
+ * Exact match of a `unique.messages` key against a P2002:
+ * - the exact constraint / index name (`orders_orgId_quoteId_key`), or
+ * - a column (`quoteId`), or a comma-separated set of columns that must all
+ *   be part of the conflict (`orgId,code`).
+ * No substring matching: `name` does not match `displayName`.
+ */
+declare function prismaUniqueMatches(error: unknown, key: string): boolean;
+/** True when the P2002 involves `field` (exact column, column set or constraint name; see `prismaUniqueMatches`). */
+declare function prismaUniqueIncludes(error: unknown, field: string): boolean;
+/** Body of the 409 thrown by `mapPrismaUnique`. */
+type UniqueConflictBody = {
+    statusCode: 409;
+    /** Unchanged from 0.2.0 (configured message or fallback). */
+    message: string;
+    error: "Conflict";
+    /**
+     * Conflicting columns, without the tenant column `orgId` (always part of
+     * org-scoped unique keys and not something a client can change). When the
+     * error only names an index, the columns of the matched key (or `[]`).
+     */
+    fields: string[];
+};
+/**
+ * If `error` is Prisma P2002, throw ConflictException (409) with a
+ * field-specific message and `fields: string[]` in the body. Otherwise return
+ * (caller should rethrow).
+ * Keys are matched exactly (see `prismaUniqueMatches`) in declaration order,
+ * so put the most specific key first.
  */
 declare function mapPrismaUnique(error: unknown, messages: Record<string, string>, fallback?: string): void;
 /** Build a classic P2002-shaped error (tests / in-memory stores). */
@@ -315,4 +402,4 @@ declare function prismaUniqueError(fields: string[]): PrismaUniqueLike & Error;
 /** Build a Prisma-7 driver-adapter P2002 (tests). */
 declare function prismaAdapterUniqueError(fields: string[], constraintName: string, modelName?: string): PrismaUniqueLike & Error;
 
-export { type Actor as A, resolveOrder$1 as B, resolveOrder as C, type DelegateHost as D, runStrategies as E, type FieldOf as F, strategiesFor as G, type IncludeOn as I, type ListQuery as L, type ModelDelegate as M, type OrgRow as O, type PrismaUniqueLike as P, type QueryStrategy as Q, type RelationRule as R, type SearchPath as S, type TransactionHost as T, type UniqueConfig as U, type WhereClause as W, type DefinedResource as a, Filter as b, type FilterBackend as c, type FilterContext as d, type ListCacheConfig as e, type ListPlan as f, type OrderBy as g, type QueryContext as h, QueryStrategies as i, type ResourceConfig as j, type ResourceDefinition as k, type SoftDeleteConfig as l, type SortDirection as m, applySearch as n, buildListWhere as o, buildWhereFromQuery as p, defineResource as q, delegateOf as r, includeFor as s, isPrismaUnique as t, mapPrismaUnique as u, planList as v, prismaAdapterUniqueError as w, prismaUniqueError as x, prismaUniqueFields as y, prismaUniqueIncludes as z };
+export { type Actor as A, planList as B, prismaAdapterUniqueError as C, type DelegateHost as D, type ExactFilterOptions as E, type FieldOf as F, prismaUniqueColumns as G, prismaUniqueConstraints as H, type IncludeOn as I, prismaUniqueError as J, prismaUniqueFields as K, type ListQuery as L, type ModelDelegate as M, prismaUniqueIncludes as N, type OrgRow as O, type PrismaUniqueLike as P, type QueryStrategy as Q, type RangeFilterOptions as R, type SearchPath as S, type TransactionHost as T, type UniqueConfig as U, prismaUniqueMatches as V, type WhereClause as W, resolveOrder$1 as X, runStrategies as Y, strategiesFor as Z, resolveOrder as _, type DefinedResource as a, Filter as b, type FilterBackend as c, type FilterContext as d, type FilterValueType as e, type InListFilterOptions as f, type ListCacheConfig as g, type ListPlan as h, type OrderBy as i, type QueryContext as j, QueryStrategies as k, type RelationRule as l, type ResourceConfig as m, type ResourceDefinition as n, type SoftDeleteConfig as o, type SortDirection as p, type UniqueConflictBody as q, applySearch as r, buildListWhere as s, buildWhereFromQuery as t, coerceFilterValue as u, defineResource as v, delegateOf as w, includeFor as x, isPrismaUnique as y, mapPrismaUnique as z };

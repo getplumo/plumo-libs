@@ -50,7 +50,13 @@ export type IncludeOn = {
 }
 
 export type UniqueConfig = {
-  /** Field (or constraint-name substring) → 409 message; first match wins. */
+  /**
+   * Key → 409 message; first match wins. A key matches when it is exactly
+   * one of the conflicting columns (`'code'`), a comma-separated set of
+   * columns that all conflict (`'orgId,code'`), or the exact constraint /
+   * index name (`'products_orgId_code_key'`). No substring matching:
+   * `name` does not match `displayName`.
+   */
   messages?: Record<string, string>
   /** 409 message when no key matches (default: generic). */
   fallback?: string
@@ -75,6 +81,12 @@ export type ResourceDefinition<TRow extends object = Record<string, unknown>> = 
   search?: ReadonlyArray<SearchPath<TRow>>
   /** Query key for search (default `q`, `?q=` is always accepted too). */
   searchParam?: string
+  /**
+   * Case-insensitive search via Prisma `mode: "insensitive"` (default `true`,
+   * PostgreSQL / MongoDB only). Set `false` on MySQL / SQLite / SQL Server,
+   * where Prisma rejects `mode`; matching then follows the column collation.
+   */
+  searchCaseInsensitive?: boolean
   /** Map of query param → filter backend (keys may be relation ids or aliases). */
   filters?: Record<string, FilterBackend>
   /** Whitelist for `?sortBy=`. Anything else falls back to `defaultOrder`. */

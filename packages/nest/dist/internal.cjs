@@ -45,11 +45,14 @@ var import_common = require("@nestjs/common");
 function nestPath(path, leaf) {
   return path.split(".").reduceRight((acc, key) => ({ [key]: acc }), leaf);
 }
-function applySearch(where, fields, q) {
+function applySearch(where, fields, q, insensitive = true) {
   const search = typeof q === "string" ? q.trim() : "";
   if (!search || fields.length === 0) return;
   where.OR = fields.map(
-    (field) => nestPath(field, { contains: search, mode: "insensitive" })
+    (field) => nestPath(
+      field,
+      insensitive ? { contains: search, mode: "insensitive" } : { contains: search }
+    )
   );
 }
 
@@ -96,10 +99,13 @@ function andMerge(where, extra) {
   where.AND = [...prev, extra];
 }
 var QueryStrategies = {
-  /** `?q=` (or `?{param}=`) → OR of case-insensitive contains. */
-  search(fields, param = "q") {
+  /**
+   * `?q=` (or `?{param}=`) → OR of `contains` (case-insensitive by default;
+   * `insensitive: false` drops Prisma's Postgres-only `mode`).
+   */
+  search(fields, param = "q", insensitive = true) {
     return ({ query, where }) => {
-      applySearch(where, fields, query[param] ?? query.q);
+      applySearch(where, fields, query[param] ?? query.q, insensitive);
     };
   },
   /** Declarative filter backends keyed by prisma field. */
@@ -126,7 +132,13 @@ var QueryStrategies = {
 function strategiesFor(resource) {
   const out = [];
   if (resource.search?.length) {
-    out.push(QueryStrategies.search(resource.search, resource.searchParam ?? "q"));
+    out.push(
+      QueryStrategies.search(
+        resource.search,
+        resource.searchParam ?? "q",
+        resource.searchCaseInsensitive !== false
+      )
+    );
   }
   if (resource.filters) {
     out.push(

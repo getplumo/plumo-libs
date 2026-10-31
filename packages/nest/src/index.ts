@@ -47,10 +47,19 @@ export {
   MAX_LIMIT,
 } from "./query/pagination.js"
 export type { PaginatedResult, PaginationMeta } from "./query/pagination.js"
-export { Filter, applySearch } from "./query/filters.js"
-export type { FilterBackend, FilterContext } from "./query/filters.js"
+export { Filter, applySearch, coerceFilterValue } from "./query/filters.js"
+export type {
+  FilterBackend,
+  FilterContext,
+  FilterValueType,
+  ExactFilterOptions,
+  RangeFilterOptions,
+  InListFilterOptions,
+} from "./query/filters.js"
 export {
   QueryStrategies,
+  strategiesFor,
+  runStrategies,
   buildListWhere,
   planList,
 } from "./query/pipeline.js"
@@ -98,6 +107,7 @@ export type {
   DestroyContext,
   ApprovalContext,
   ApprovalChange,
+  AfterCommitFn,
   PresentContext,
   PresentAction,
   ListContext,
@@ -133,6 +143,9 @@ export type {
 // ─── Approval workflow ───────────────────────────────────────────────────
 export {
   ApprovalRole,
+  APPROVAL_STATUSES,
+  isApprovalStatus,
+  assertApprovalStatus,
   approvalOnCreate,
   approvalOnApprove,
   canSetApprovalStatus,
@@ -151,11 +164,14 @@ export {
   isPrismaUnique,
   prismaUniqueFields,
   prismaUniqueIncludes,
+  prismaUniqueColumns,
+  prismaUniqueConstraints,
+  prismaUniqueMatches,
   mapPrismaUnique,
   prismaUniqueError,
   prismaAdapterUniqueError,
 } from "./prisma/unique.js"
-export type { PrismaUniqueLike } from "./prisma/unique.js"
+export type { PrismaUniqueLike, UniqueConflictBody } from "./prisma/unique.js"
 
 // ─── Deprecated 0.1 API (kept for backward compatibility) ────────────────
 /** @deprecated use `OrgResourceService`. */

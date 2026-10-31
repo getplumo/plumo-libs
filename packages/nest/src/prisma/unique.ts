@@ -43,51 +43,122 @@ function unquote(value: unknown): string {
   return String(value).trim().replace(/^"+|"+$/g, "")
 }
 
+/** Column names reported by a P2002 (classic `meta.target` array or adapter `constraint.fields`), unquoted. */
+export function prismaUniqueColumns(error: unknown): string[] {
+  if (!isPrismaUnique(error)) return []
+  const meta = error.meta ?? {}
+  const out: string[] = []
+  if (Array.isArray(meta.target)) out.push(...meta.target.map(unquote))
+  const constraint = meta.driverAdapterError?.cause?.constraint
+  if (constraint && typeof constraint === "object" && Array.isArray(constraint.fields)) {
+    out.push(...constraint.fields.map(unquote))
+  }
+  return [...new Set(out.filter(Boolean))]
+}
+
+/** Constraint / index names reported by a P2002 (e.g. `orders_orgId_quoteId_key`). */
+export function prismaUniqueConstraints(error: unknown): string[] {
+  if (!isPrismaUnique(error)) return []
+  const meta = error.meta ?? {}
+  const out: string[] = []
+  if (typeof meta.target === "string") out.push(unquote(meta.target))
+  const cause = meta.driverAdapterError?.cause
+  const constraint = cause?.constraint
+  if (typeof constraint === "string") out.push(unquote(constraint))
+  else if (constraint && typeof constraint.index === "string") {
+    out.push(unquote(constraint.index))
+  }
+  const message = cause?.originalMessage
+  if (typeof message === "string") {
+    const match = /constraint "([^"]+)"/.exec(message)
+    if (match?.[1]) out.push(match[1])
+  }
+  return [...new Set(out.filter(Boolean))]
+}
+
 /**
  * Column names and/or constraint/index name involved in a P2002, unquoted.
  * Works with both the classic `meta.target` and the driver-adapter shape.
  * Example (adapter): ['orgId', 'year', 'invoice_sequences_pkey'].
  */
 export function prismaUniqueFields(error: unknown): string[] {
-  if (!isPrismaUnique(error)) return []
-  const meta = error.meta ?? {}
-  const out: string[] = []
-
-  const target = meta.target
-  if (Array.isArray(target)) out.push(...target.map(unquote))
-  else if (typeof target === "string") out.push(unquote(target))
-
-  const cause = meta.driverAdapterError?.cause
-  const constraint = cause?.constraint
-  if (typeof constraint === "string") {
-    out.push(unquote(constraint))
-  } else if (constraint) {
-    if (Array.isArray(constraint.fields)) {
-      out.push(...constraint.fields.map(unquote))
-    }
-    if (typeof constraint.index === "string") out.push(unquote(constraint.index))
-  }
-
-  const message = cause?.originalMessage
-  if (typeof message === "string") {
-    const match = /constraint "([^"]+)"/.exec(message)
-    if (match?.[1]) out.push(match[1])
-  }
-
-  return [...new Set(out.filter(Boolean))]
-}
-
-/** True when the P2002 involves `field` (column or constraint-name substring). */
-export function prismaUniqueIncludes(error: unknown, field: string): boolean {
-  return prismaUniqueFields(error).some(
-    (f) => f === field || f.includes(field),
-  )
+  return [
+    ...new Set([...prismaUniqueColumns(error), ...prismaUniqueConstraints(error)]),
+  ]
 }
 
 /**
- * If `error` is Prisma P2002, throw ConflictException with a field-specific
- * message. Otherwise return (caller should rethrow).
- * Keys are matched in declaration order, so put the most specific key first.
+ * Columns to match against: the reported columns, or — when the error only
+ * names a constraint (partial unique index on adapters) — the `_`-separated
+ * tokens of that name (`orders_orgId_quoteId_key` → orders, orgId, quoteId, key).
+ * Tokens are compared whole, never as substrings.
+ */
+function matchableColumns(error: unknown): Set<string> {
+  const columns = prismaUniqueColumns(error)
+  if (columns.length) return new Set(columns)
+  return new Set(prismaUniqueConstraints(error).flatMap((c) => c.split("_")))
+}
+
+function keyColumns(key: string): string[] {
+  return key
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean)
+}
+
+/**
+ * Exact match of a `unique.messages` key against a P2002:
+ * - the exact constraint / index name (`orders_orgId_quoteId_key`), or
+ * - a column (`quoteId`), or a comma-separated set of columns that must all
+ *   be part of the conflict (`orgId,code`).
+ * No substring matching: `name` does not match `displayName`.
+ */
+export function prismaUniqueMatches(error: unknown, key: string): boolean {
+  if (!isPrismaUnique(error)) return false
+  const k = key.trim()
+  if (!k) return false
+  if (prismaUniqueConstraints(error).includes(k)) return true
+  const wanted = keyColumns(k)
+  if (!wanted.length) return false
+  const columns = matchableColumns(error)
+  return wanted.every((c) => columns.has(c))
+}
+
+/** True when the P2002 involves `field` (exact column, column set or constraint name; see `prismaUniqueMatches`). */
+export function prismaUniqueIncludes(error: unknown, field: string): boolean {
+  return prismaUniqueMatches(error, field)
+}
+
+/** Body of the 409 thrown by `mapPrismaUnique`. */
+export type UniqueConflictBody = {
+  statusCode: 409
+  /** Unchanged from 0.2.0 (configured message or fallback). */
+  message: string
+  error: "Conflict"
+  /**
+   * Conflicting columns, without the tenant column `orgId` (always part of
+   * org-scoped unique keys and not something a client can change). When the
+   * error only names an index, the columns of the matched key (or `[]`).
+   */
+  fields: string[]
+}
+
+function conflict(message: string, fields: string[]): ConflictException {
+  const body: UniqueConflictBody = {
+    statusCode: 409,
+    message,
+    error: "Conflict",
+    fields: fields.filter((f) => f !== "orgId"),
+  }
+  return new ConflictException(body)
+}
+
+/**
+ * If `error` is Prisma P2002, throw ConflictException (409) with a
+ * field-specific message and `fields: string[]` in the body. Otherwise return
+ * (caller should rethrow).
+ * Keys are matched exactly (see `prismaUniqueMatches`) in declaration order,
+ * so put the most specific key first.
  */
 export function mapPrismaUnique(
   error: unknown,
@@ -96,13 +167,17 @@ export function mapPrismaUnique(
 ): void {
   if (!isPrismaUnique(error)) return
 
-  const fields = prismaUniqueFields(error)
+  const columns = prismaUniqueColumns(error)
   for (const [key, message] of Object.entries(messages)) {
-    if (fields.some((field) => field === key || field.includes(key))) {
-      throw new ConflictException(message)
+    if (prismaUniqueMatches(error, key)) {
+      const isConstraintKey = prismaUniqueConstraints(error).includes(key.trim())
+      throw conflict(
+        message,
+        columns.length ? columns : isConstraintKey ? [] : keyColumns(key),
+      )
     }
   }
-  throw new ConflictException(fallback)
+  throw conflict(fallback, columns)
 }
 
 /** Build a classic P2002-shaped error (tests / in-memory stores). */

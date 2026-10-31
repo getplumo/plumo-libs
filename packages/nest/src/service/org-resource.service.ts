@@ -1,4 +1,4 @@
-import { NotFoundException } from "@nestjs/common"
+import { Logger, NotFoundException } from "@nestjs/common"
 import {
   delegateOf,
   type Actor,
@@ -9,6 +9,7 @@ import {
   type WhereClause,
 } from "../core/types.js"
 import {
+  assertApprovalStatus,
   buildApprovalStatusPatch,
   type ApprovalStatusValue,
 } from "../approval/approval.js"
@@ -32,6 +33,7 @@ import {
 } from "../resource/resource.js"
 import { requireInOrg } from "../tenancy/require-in-org.js"
 import type {
+  AfterCommitFn,
   ApprovalContext,
   CreateContext,
   CreateOf,
@@ -80,7 +82,10 @@ export type ApprovalInput = { approvalStatus: ApprovalStatusValue | string }
  * - `orgId` / `id` in a write payload are stripped (no tenant hopping);
  * - unknown / other-org ids → 404 `notFoundMessage` before any write;
  * - with `transactional: true` the hooks and the write share `ctx.tx`;
- * - P2002 → 409 via `resource.unique`; list cache invalidated after writes.
+ * - P2002 → 409 via `resource.unique`; list cache invalidated after writes;
+ * - `ctx.afterWrite(fn)` runs inside the write/transaction (a throw rolls
+ *   back); `ctx.afterCommit(fn)` runs only once the write is durable, and its
+ *   errors are logged, not returned to the client.
  */
 export class OrgResourceService<T extends ResourceTypes = { row: OrgRow }> {
   constructor(
@@ -291,7 +296,8 @@ export class OrgResourceService<T extends ResourceTypes = { row: OrgRow }> {
   }
 
   /**
-   * Approval workflow (`PATCH :id/approval`). Unchanged status → returns the
+   * Approval workflow (`PATCH :id/approval`). Status other than
+   * pending/approved/rejected → 400. Unchanged status → returns the
    * current row (no write). Otherwise checks the actor role (403), runs
    * `beforeApproval`, writes the patch and `afterApproval`.
    */
@@ -301,11 +307,14 @@ export class OrgResourceService<T extends ResourceTypes = { row: OrgRow }> {
     dto: ApprovalInput,
     actor: Actor,
   ): Promise<OutputOf<T>> {
+    // 400 for anything but pending/approved/rejected, even without a DTO.
+    const to: unknown = (dto as Partial<ApprovalInput> | null | undefined)
+      ?.approvalStatus
+    assertApprovalStatus(to)
     const existing = await this.findOrFail(orgId, id, "approval")
     const from = String(
       (existing as { approvalStatus?: unknown }).approvalStatus,
     ) as ApprovalStatusValue
-    const to = dto.approvalStatus as ApprovalStatusValue
     const patch = buildApprovalStatusPatch(from, to, actor)
     if (!patch) return this.presentOne(existing, { orgId, action: "approval" })
     const row = await this.runWrite<ApprovalContext<RowOf<T>, TxOf<T>>>(
@@ -329,7 +338,12 @@ export class OrgResourceService<T extends ResourceTypes = { row: OrgRow }> {
   /**
    * Shared write runner: builds the context, opens the transaction when the
    * resource is transactional, runs `afterWrite` callbacks + the after hook,
-   * maps unique errors and invalidates the list cache on success.
+   * maps unique errors, invalidates the list cache once the write is durable
+   * and then runs `afterCommit` callbacks (errors logged, never thrown).
+   *
+   * Non-transactional: if a hook throws after the row was written, the row
+   * stays persisted, so the list cache (+ dependants) is still invalidated
+   * and the registered `afterCommit` callbacks still run before rethrowing.
    */
   protected async runWrite<C extends WriteContext<RowOf<T>, TxOf<T>>>(
     action: WriteAction,
@@ -339,8 +353,13 @@ export class OrgResourceService<T extends ResourceTypes = { row: OrgRow }> {
     write: (ctx: C) => Promise<RowOf<T>>,
     after: (row: RowOf<T>, ctx: C) => Hook<void>,
   ): Promise<RowOf<T>> {
+    let committed: AfterCommitFn<RowOf<T>>[] = []
+    let written: { row: RowOf<T> } | undefined
     const exec = async (tx: DelegateHost): Promise<RowOf<T>> => {
       const callbacks: Array<(row: RowOf<T>) => Hook<void>> = []
+      const onCommit: AfterCommitFn<RowOf<T>>[] = []
+      // A retried transaction callback starts from a clean list.
+      committed = onCommit
       const ctx = {
         ...extra,
         action,
@@ -350,23 +369,57 @@ export class OrgResourceService<T extends ResourceTypes = { row: OrgRow }> {
         afterWrite: (fn: (row: RowOf<T>) => Hook<void>) => {
           callbacks.push(fn)
         },
+        afterCommit: (fn: AfterCommitFn<RowOf<T>>) => {
+          onCommit.push(fn)
+        },
       } as unknown as C
       const row = await write(ctx)
+      written = { row }
       for (const fn of callbacks) await fn(row)
       await after(row, ctx)
       return row
     }
+    let row: RowOf<T>
     try {
-      const row = this.def.transactional
+      row = this.def.transactional
         ? await (this.db as TransactionHost).$transaction((tx: never) =>
             exec(tx),
           )
         : await exec(this.db)
-      this.invalidateListCache(orgId)
-      return row
     } catch (error) {
+      if (written && !this.def.transactional) {
+        // The write is already persisted (no transaction to roll back).
+        this.invalidateListCache(orgId)
+        await this.runAfterCommit(committed, written.row, action)
+      }
       this.mapWriteError(error, action)
       throw error
+    }
+    this.invalidateListCache(orgId)
+    await this.runAfterCommit(committed, row, action)
+    return row
+  }
+
+  /** Logger for `afterCommit` failures (override to plug your own). */
+  protected readonly afterCommitLogger: Logger = new Logger(this.constructor.name)
+
+  /** Run `afterCommit` callbacks in order; log and swallow their errors. */
+  protected async runAfterCommit(
+    fns: readonly AfterCommitFn<RowOf<T>>[],
+    row: RowOf<T>,
+    action: WriteAction,
+  ): Promise<void> {
+    for (const fn of fns) {
+      try {
+        await fn(row)
+      } catch (error) {
+        this.afterCommitLogger.error(
+          `afterCommit callback failed (${this.def.model} ${action}): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          error instanceof Error ? error.stack : undefined,
+        )
+      }
     }
   }
 

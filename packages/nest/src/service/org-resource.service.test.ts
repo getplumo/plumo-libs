@@ -1,7 +1,7 @@
 import "reflect-metadata"
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { ConflictException, ForbiddenException, NotFoundException } from "@nestjs/common"
+import { BadRequestException, ConflictException, ForbiddenException, Logger, NotFoundException } from "@nestjs/common"
 import { OrgListCache } from "../cache/org-list-cache.js"
 import type { OrgRow, WhereClause } from "../core/types.js"
 import { prismaAdapterUniqueError } from "../prisma/unique.js"
@@ -245,5 +245,212 @@ describe("OrgResourceService.updateApproval", () => {
     assert.equal(row.approvalStatus, "approved")
     assert.equal(row.approvedBy, "u1")
     assert.deepEqual(changes, ["rejected->approved"])
+  })
+})
+
+describe("0.2.1 fixes", () => {
+  const admin = { userId: "u1", orgRole: "org:admin" }
+
+  it("#2 updateApproval: unknown / missing status → 400 without a DTO, nothing written", async () => {
+    const { thing, db, resource } = setup()
+    thing.rows.push({ id: 1, orgId: "me", name: "a", approvalStatus: "pending" })
+    const svc = new OrgResourceService<{ row: Thing }>(db, resource)
+    for (const body of [{ approvalStatus: "archived" }, { approvalStatus: "" }, {}, undefined]) {
+      await assert.rejects(
+        () => svc.updateApproval("me", 1, body as never, admin),
+        BadRequestException,
+        JSON.stringify(body),
+      )
+    }
+    assert.equal(thing.rows[0]?.approvalStatus, "pending")
+  })
+
+  it("#3 non-transactional: after-hook throws after the write → list cache (and dependants) still invalidated", async () => {
+    const { thing, db, resource } = setup({ listMode: "all", listCache: { scope: "things" } })
+    const cache = new OrgListCache()
+    thing.rows.push({ id: 1, orgId: "me", name: "a" })
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override afterCreate(): never {
+        throw new Error("hook failed")
+      }
+    }
+    const svc = new Svc(db, resource, cache)
+    // A dependant scope embedding "things".
+    const parent = new OrgResourceService<{ row: Thing }>(
+      db,
+      defineResource<Thing>({ model: "thing", listMode: "all", listCache: { scope: "parents", dependsOn: ["things"] } }),
+      cache,
+    )
+    assert.equal(((await svc.list("me")) as Thing[]).length, 1)
+    assert.equal(((await parent.list("me")) as Thing[]).length, 1)
+    await assert.rejects(() => svc.create("me", { name: "b" }), /hook failed/)
+    assert.equal(thing.rows.length, 2, "row persisted (no transaction)")
+    assert.equal(((await svc.list("me")) as Thing[]).length, 2)
+    assert.equal(((await parent.list("me")) as Thing[]).length, 2)
+  })
+
+  it("#3 a failure before the write does not invalidate", async () => {
+    const { thing, db, resource } = setup({ listMode: "all", listCache: { scope: "things" } })
+    thing.rows.push({ id: 1, orgId: "me", name: "a" })
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override beforeCreate(): never {
+        throw new ForbiddenException("no")
+      }
+    }
+    const svc = new Svc(db, resource, new OrgListCache())
+    assert.equal(((await svc.list("me")) as Thing[]).length, 1)
+    thing.rows.push({ id: 2, orgId: "me", name: "b" })
+    await assert.rejects(() => svc.create("me", { name: "c" }), ForbiddenException)
+    assert.equal(((await svc.list("me")) as Thing[]).length, 1, "still cached")
+  })
+
+  function quietLogger() {
+    const errors: string[] = []
+    const logger = new Logger("test")
+    logger.error = ((msg: string) => {
+      errors.push(msg)
+    }) as Logger["error"]
+    return { errors, logger }
+  }
+
+  it("#5 afterCommit runs after the transaction commits, after afterWrite/after* hooks", async () => {
+    const { db, log, resource } = setup({ transactional: true })
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override beforeCreate(dto: CreateThing, ctx: CreateContext<Thing>) {
+        ctx.afterCommit((row) => {
+          log.push(`commit:${row.name}`)
+        })
+        ctx.afterWrite(() => {
+          log.push("afterWrite")
+        })
+        return { ...dto }
+      }
+      protected override afterCreate(row: Thing, ctx: CreateContext<Thing>) {
+        log.push("after")
+        ctx.afterCommit(() => {
+          log.push("commit:2")
+        })
+      }
+    }
+    await new Svc(db, resource).create("me", { name: "x" })
+    assert.deepEqual(log, ["tx:begin", "afterWrite", "after", "tx:commit", "commit:x", "commit:2"])
+  })
+
+  it("#5 afterCommit never runs on rollback", async () => {
+    const { thing, db, log, resource } = setup({ transactional: true })
+    db.$transaction = async <R>(fn: (tx: unknown) => Promise<R>) => {
+      log.push("tx:begin")
+      const snapshot = [...thing.rows]
+      try {
+        return await fn({ thing, marker: "tx" })
+      } catch (e) {
+        thing.rows.splice(0, thing.rows.length, ...snapshot)
+        log.push("tx:rollback")
+        throw e
+      }
+    }
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override afterCreate(_row: Thing, ctx: CreateContext<Thing>): never {
+        ctx.afterCommit(() => {
+          log.push("commit")
+        })
+        throw new ForbiddenException("nope")
+      }
+    }
+    await assert.rejects(() => new Svc(db, resource).create("me", { name: "x" }), ForbiddenException)
+    assert.deepEqual(log, ["tx:begin", "tx:rollback"])
+    assert.equal(thing.rows.length, 0)
+  })
+
+  it("#5 afterCommit errors are logged, not thrown; later callbacks still run", async () => {
+    const { db, resource } = setup()
+    const { errors, logger } = quietLogger()
+    const ran: string[] = []
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override readonly afterCommitLogger = logger
+      protected override afterCreate(_row: Thing, ctx: CreateContext<Thing>) {
+        ctx.afterCommit(async () => {
+          throw new Error("smtp down")
+        })
+        ctx.afterCommit(() => {
+          ran.push("second")
+        })
+      }
+    }
+    const row = (await new Svc(db, resource).create("me", { name: "x" })) as Thing
+    assert.equal(row.name, "x")
+    assert.deepEqual(ran, ["second"])
+    assert.equal(errors.length, 1)
+    assert.match(errors[0] ?? "", /afterCommit callback failed \(thing create\): smtp down/)
+  })
+
+  it("#5 non-transactional: afterCommit runs right after the write; still runs if a later hook throws", async () => {
+    const { thing, db, resource } = setup()
+    const ran: string[] = []
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override beforeUpdate(dto: { name?: string }, ctx: UpdateContext<Thing>) {
+        ctx.afterCommit((row) => {
+          ran.push(`commit:${row.name}`)
+        })
+        return { ...dto }
+      }
+      protected override afterUpdate(): never {
+        throw new Error("late hook")
+      }
+    }
+    thing.rows.push({ id: 1, orgId: "me", name: "a" })
+    await assert.rejects(() => new Svc(db, resource).update("me", 1, { name: "b" }), /late hook/)
+    assert.deepEqual(ran, ["commit:b"])
+  })
+
+  it("#5 afterCommit works on destroy and approval too", async () => {
+    const { thing, db, resource } = setup({ transactional: true })
+    thing.rows.push({ id: 1, orgId: "me", name: "a", approvalStatus: "pending" })
+    const ran: string[] = []
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override beforeApproval(ctx: Parameters<OrgResourceService<{ row: Thing }>["beforeApproval"]>[0]) {
+        ctx.afterCommit((row) => {
+          ran.push(`approval:${(row as Thing).approvalStatus}`)
+        })
+      }
+      protected override beforeDestroy(ctx: Parameters<OrgResourceService<{ row: Thing }>["beforeDestroy"]>[0]) {
+        ctx.afterCommit((row) => {
+          ran.push(`destroy:${(row as Thing).id}`)
+        })
+      }
+    }
+    const svc = new Svc(db, resource)
+    await svc.updateApproval("me", 1, { approvalStatus: "approved" }, admin)
+    await svc.destroy("me", 1)
+    assert.deepEqual(ran, ["approval:approved", "destroy:1"])
+  })
+
+  it("#6 resource.unique: exact match + fields in the 409 body", async () => {
+    const { db, resource } = setup({
+      unique: { messages: { name: "Name already exists", displayName: "Display name already exists" } },
+    })
+    class Svc extends OrgResourceService<{ row: Thing }> {
+      protected override beforeCreate(): never {
+        throw prismaAdapterUniqueError(["orgId", "displayName"], "things_orgId_displayName_key")
+      }
+    }
+    await assert.rejects(
+      () => new Svc(db, resource).create("me", { name: "x" }),
+      (e: unknown) =>
+        e instanceof ConflictException &&
+        e.message === "Display name already exists" &&
+        JSON.stringify(e.getResponse()) ===
+          JSON.stringify({ statusCode: 409, message: "Display name already exists", error: "Conflict", fields: ["displayName"] }),
+    )
+  })
+
+  it("#7 numberRange with string query values (no DTO) works; garbage → 400", async () => {
+    const { thing, db, resource } = setup()
+    thing.rows.push({ id: 1, orgId: "me", name: "a", price: 5 })
+    thing.rows.push({ id: 2, orgId: "me", name: "b", price: 50 })
+    const svc = new OrgResourceService<{ row: Thing }>(db, resource)
+    const res = (await svc.list("me", { minPrice: "10" })) as { data: Thing[] }
+    assert.deepEqual(res.data.map((r) => r.id), [2])
+    await assert.rejects(() => svc.list("me", { minPrice: "ten" }), BadRequestException)
   })
 })

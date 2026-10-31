@@ -10,19 +10,24 @@ import {
   __decorateParam,
   applySearch,
   buildListWhere,
+  coerceFilterValue,
   delegateOf,
   isPrismaUnique,
   mapPrismaUnique,
   paginatedResult,
   planList,
   prismaAdapterUniqueError,
+  prismaUniqueColumns,
+  prismaUniqueConstraints,
   prismaUniqueError,
   prismaUniqueFields,
   prismaUniqueIncludes,
+  prismaUniqueMatches,
   resolveOrder,
   resolvePagination,
+  runStrategies,
   strategiesFor
-} from "./chunk-JH4URFFP.js";
+} from "./chunk-7H7EKVXI.js";
 
 // src/index.ts
 import "reflect-metadata";
@@ -137,10 +142,25 @@ var CurrentActor = createParamDecorator(
 );
 
 // src/service/org-resource.service.ts
-import { NotFoundException as NotFoundException2 } from "@nestjs/common";
+import { Logger, NotFoundException as NotFoundException2 } from "@nestjs/common";
 
 // src/approval/approval.ts
-import { ForbiddenException as ForbiddenException2 } from "@nestjs/common";
+import { BadRequestException, ForbiddenException as ForbiddenException2 } from "@nestjs/common";
+var APPROVAL_STATUSES = [
+  "pending",
+  "approved",
+  "rejected"
+];
+function isApprovalStatus(value) {
+  return typeof value === "string" && APPROVAL_STATUSES.includes(value);
+}
+function assertApprovalStatus(value) {
+  if (!isApprovalStatus(value)) {
+    throw new BadRequestException(
+      `approvalStatus must be one of: ${APPROVAL_STATUSES.join(", ")}`
+    );
+  }
+}
 var ApprovalRole = {
   ADMIN: "org:admin",
   MANAGER: "org:manager",
@@ -175,6 +195,7 @@ function canSetApprovalStatus(orgRole) {
   return orgRole === ApprovalRole.ADMIN || orgRole === ApprovalRole.MANAGER;
 }
 function buildApprovalStatusPatch(current, next, actor) {
+  assertApprovalStatus(next);
   if (next === current) return null;
   if (!canSetApprovalStatus(actor.orgRole)) {
     throw new ForbiddenException2(
@@ -459,16 +480,18 @@ var OrgResourceService = class {
     );
   }
   /**
-   * Approval workflow (`PATCH :id/approval`). Unchanged status → returns the
+   * Approval workflow (`PATCH :id/approval`). Status other than
+   * pending/approved/rejected → 400. Unchanged status → returns the
    * current row (no write). Otherwise checks the actor role (403), runs
    * `beforeApproval`, writes the patch and `afterApproval`.
    */
   async updateApproval(orgId, id, dto, actor) {
+    const to = dto?.approvalStatus;
+    assertApprovalStatus(to);
     const existing = await this.findOrFail(orgId, id, "approval");
     const from = String(
       existing.approvalStatus
     );
-    const to = dto.approvalStatus;
     const patch = buildApprovalStatusPatch(from, to, actor);
     if (!patch) return this.presentOne(existing, { orgId, action: "approval" });
     const row = await this.runWrite(
@@ -491,11 +514,20 @@ var OrgResourceService = class {
   /**
    * Shared write runner: builds the context, opens the transaction when the
    * resource is transactional, runs `afterWrite` callbacks + the after hook,
-   * maps unique errors and invalidates the list cache on success.
+   * maps unique errors, invalidates the list cache once the write is durable
+   * and then runs `afterCommit` callbacks (errors logged, never thrown).
+   *
+   * Non-transactional: if a hook throws after the row was written, the row
+   * stays persisted, so the list cache (+ dependants) is still invalidated
+   * and the registered `afterCommit` callbacks still run before rethrowing.
    */
   async runWrite(action, orgId, actor, extra, write, after) {
+    let committed = [];
+    let written;
     const exec = async (tx) => {
       const callbacks = [];
+      const onCommit = [];
+      committed = onCommit;
       const ctx = {
         ...extra,
         action,
@@ -504,22 +536,47 @@ var OrgResourceService = class {
         tx,
         afterWrite: (fn) => {
           callbacks.push(fn);
+        },
+        afterCommit: (fn) => {
+          onCommit.push(fn);
         }
       };
-      const row = await write(ctx);
-      for (const fn of callbacks) await fn(row);
-      await after(row, ctx);
-      return row;
+      const row2 = await write(ctx);
+      written = { row: row2 };
+      for (const fn of callbacks) await fn(row2);
+      await after(row2, ctx);
+      return row2;
     };
+    let row;
     try {
-      const row = this.def.transactional ? await this.db.$transaction(
+      row = this.def.transactional ? await this.db.$transaction(
         (tx) => exec(tx)
       ) : await exec(this.db);
-      this.invalidateListCache(orgId);
-      return row;
     } catch (error) {
+      if (written && !this.def.transactional) {
+        this.invalidateListCache(orgId);
+        await this.runAfterCommit(committed, written.row, action);
+      }
       this.mapWriteError(error, action);
       throw error;
+    }
+    this.invalidateListCache(orgId);
+    await this.runAfterCommit(committed, row, action);
+    return row;
+  }
+  /** Logger for `afterCommit` failures (override to plug your own). */
+  afterCommitLogger = new Logger(this.constructor.name);
+  /** Run `afterCommit` callbacks in order; log and swallow their errors. */
+  async runAfterCommit(fns, row, action) {
+    for (const fn of fns) {
+      try {
+        await fn(row);
+      } catch (error) {
+        this.afterCommitLogger.error(
+          `afterCommit callback failed (${this.def.model} ${action}): ${error instanceof Error ? error.message : String(error)}`,
+          error instanceof Error ? error.stack : void 0
+        );
+      }
     }
   }
   /** P2002 → 409 per `resource.unique` (only for the configured actions). */
@@ -1192,6 +1249,7 @@ __decorateClass([
   IsIn(["pending", "approved", "rejected"])
 ], UpdateApprovalDto.prototype, "approvalStatus", 2);
 export {
+  APPROVAL_STATUSES,
   ApprovalRole,
   CreateTradeLineItemDto,
   CurrentActor,
@@ -1217,16 +1275,19 @@ export {
   applySearch,
   approvalOnApprove,
   approvalOnCreate,
+  assertApprovalStatus,
   buildApprovalStatusPatch,
   buildListWhere,
   buildWhereFromQuery,
   canSetApprovalStatus,
+  coerceFilterValue,
   defaultOrgListCache,
   defineResource,
   delegateOf,
   findManyPaginated,
   fromCents,
   includeFor,
+  isApprovalStatus,
   isPrismaUnique,
   mapApprovableCreate,
   mapPrismaUnique,
@@ -1234,9 +1295,12 @@ export {
   paginatedResult,
   planList,
   prismaAdapterUniqueError,
+  prismaUniqueColumns,
+  prismaUniqueConstraints,
   prismaUniqueError,
   prismaUniqueFields,
   prismaUniqueIncludes,
+  prismaUniqueMatches,
   requireAllRelatedInOrg,
   requireInOrg,
   requireInOrgModel,
@@ -1244,6 +1308,8 @@ export {
   resolveOrder2 as resolveOrder,
   resolvePagination,
   runApprovalUpdate,
+  runStrategies,
+  strategiesFor,
   sumMoney,
   toCents,
   toNumber,

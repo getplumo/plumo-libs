@@ -21,80 +21,137 @@ function delegateOf(host, model) {
 
 // src/query/filters.ts
 import { BadRequestException } from "@nestjs/common";
-function utcDayRange(from, to) {
-  if (!from && !to) return void 0;
+function isBlank(v) {
+  return v === void 0 || v === null || v === "";
+}
+function parseDate(value, label) {
+  const d = value instanceof Date ? new Date(value.getTime()) : new Date(String(value));
+  if (Number.isNaN(d.getTime())) {
+    throw new BadRequestException(`${label}: invalid date "${String(value)}"`);
+  }
+  return d;
+}
+function coerceFilterValue(value, type, label) {
+  if (!type) return value;
+  if (Array.isArray(value)) {
+    throw new BadRequestException(`${label}: expected a single value`);
+  }
+  switch (type) {
+    case "string":
+      return String(value);
+    case "number":
+    case "int": {
+      const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value.trim()) : Number.NaN;
+      if (!Number.isFinite(n) || type === "int" && !Number.isSafeInteger(n)) {
+        throw new BadRequestException(
+          `${label}: expected ${type === "int" ? "an integer" : "a number"}, got "${String(value)}"`
+        );
+      }
+      return n;
+    }
+    case "boolean": {
+      if (typeof value === "boolean") return value;
+      const v = String(value).trim().toLowerCase();
+      if (v === "true" || v === "1") return true;
+      if (v === "false" || v === "0") return false;
+      throw new BadRequestException(
+        `${label}: expected a boolean (true/false), got "${String(value)}"`
+      );
+    }
+    case "date":
+      return parseDate(value, label);
+    default:
+      return value;
+  }
+}
+function utcDayRange(from, to, label) {
+  if (isBlank(from) && isBlank(to)) return void 0;
   const range = {};
-  if (from) {
-    const d = new Date(String(from));
+  if (!isBlank(from)) {
+    const d = parseDate(from, label);
     d.setUTCHours(0, 0, 0, 0);
     range.gte = d;
   }
-  if (to) {
-    const d = new Date(String(to));
+  if (!isBlank(to)) {
+    const d = parseDate(to, label);
     d.setUTCHours(23, 59, 59, 999);
     range.lte = d;
   }
   return range;
 }
-function assertRange(min, max, label) {
-  if (min !== void 0 && max !== void 0 && Number(min) > Number(max)) {
-    throw new BadRequestException(
-      `${label}: min must be less than or equal to max`
-    );
-  }
+function exactOptions(keyOrOptions, type) {
+  if (typeof keyOrOptions === "object") return keyOrOptions;
+  return { key: keyOrOptions, type };
 }
 var Filter = {
-  /** `?brandId=3` when key is `brandId` → `{ brandId: 3 }` */
-  exact(queryKey) {
+  /**
+   * `?brandId=3` when key is `brandId` → `{ brandId: 3 }`.
+   * Accepts `exact()`, `exact('queryKey')`, `exact('queryKey', 'int')` or
+   * `exact({ key?, type? })`. Without `type` the raw value is used (rely on a
+   * transforming DTO); with `type` it is coerced and validated (400).
+   */
+  exact(keyOrOptions, type) {
+    const opts = exactOptions(keyOrOptions, type);
     return {
       apply({ query, where, field }) {
-        const key = queryKey ?? field;
+        const key = opts.key ?? field;
         if (!key) return;
         const v = query[key];
-        if (v !== void 0 && v !== null && v !== "") {
-          where[field ?? key] = v;
-        }
+        if (isBlank(v)) return;
+        where[field ?? key] = coerceFilterValue(v, opts.type, key);
       }
     };
   },
-  /** `?minPrice=&maxPrice=` → `{ [field]: { gte, lte } }` */
-  numberRange(minKey, maxKey) {
+  /**
+   * `?minPrice=&maxPrice=` → `{ [field]: { gte, lte } }`. Values are always
+   * coerced to numbers; a non-numeric value or min > max → 400.
+   */
+  numberRange(minKey, maxKey, options = {}) {
+    const type = options.type ?? "number";
     return {
       apply({ query, where, field }) {
         if (!field) return;
-        const min = query[minKey];
-        const max = query[maxKey];
-        if (min === void 0 && max === void 0) return;
-        assertRange(min, max, field);
+        const rawMin = query[minKey];
+        const rawMax = query[maxKey];
+        if (isBlank(rawMin) && isBlank(rawMax)) return;
+        const min = isBlank(rawMin) ? void 0 : coerceFilterValue(rawMin, type, minKey);
+        const max = isBlank(rawMax) ? void 0 : coerceFilterValue(rawMax, type, maxKey);
+        if (min !== void 0 && max !== void 0 && min > max) {
+          throw new BadRequestException(
+            `${field}: min must be less than or equal to max`
+          );
+        }
         where[field] = {
-          ...min !== void 0 && min !== "" && { gte: Number(min) },
-          ...max !== void 0 && max !== "" && { lte: Number(max) }
+          ...min !== void 0 && { gte: min },
+          ...max !== void 0 && { lte: max }
         };
       }
     };
   },
-  /** `?createdAtFrom=&createdAtTo=` → UTC day bounds */
+  /** `?createdAtFrom=&createdAtTo=` → UTC day bounds. Invalid date → 400. */
   dateRange(fromKey, toKey) {
     return {
       apply({ query, where, field }) {
         if (!field) return;
-        const range = utcDayRange(
-          query[fromKey],
-          query[toKey]
-        );
+        const range = utcDayRange(query[fromKey], query[toKey], field);
         if (range) where[field] = range;
       }
     };
   },
-  /** `?status=a,b` or array → `{ [field]: { in: [...] } }` */
-  inList(queryKey) {
+  /**
+   * `?status=a,b` or array → `{ [field]: { in: [...] } }`.
+   * Accepts `inList()`, `inList('queryKey')`, `inList('queryKey', 'int')` or
+   * `inList({ key?, type? })`; with `type` every item is coerced (400).
+   */
+  inList(keyOrOptions, type) {
+    const opts = exactOptions(keyOrOptions, type);
     return {
       apply({ query, where, field }) {
-        const key = queryKey ?? field;
+        const key = opts.key ?? field;
         if (!key || !field) return;
         const v = query[key];
-        if (v === void 0 || v === null || v === "") return;
-        const list = Array.isArray(v) ? v : String(v).split(",").map((s) => s.trim()).filter(Boolean);
+        if (isBlank(v)) return;
+        const list = (Array.isArray(v) ? v : String(v).split(",").map((s) => s.trim()).filter(Boolean)).map((item) => coerceFilterValue(item, opts.type, key));
         if (list.length) where[field] = { in: list };
       }
     };
@@ -106,11 +163,14 @@ var Filter = {
 function nestPath(path, leaf) {
   return path.split(".").reduceRight((acc, key) => ({ [key]: acc }), leaf);
 }
-function applySearch(where, fields, q) {
+function applySearch(where, fields, q, insensitive = true) {
   const search = typeof q === "string" ? q.trim() : "";
   if (!search || fields.length === 0) return;
   where.OR = fields.map(
-    (field) => nestPath(field, { contains: search, mode: "insensitive" })
+    (field) => nestPath(
+      field,
+      insensitive ? { contains: search, mode: "insensitive" } : { contains: search }
+    )
   );
 }
 
@@ -173,10 +233,13 @@ function andMerge(where, extra) {
   where.AND = [...prev, extra];
 }
 var QueryStrategies = {
-  /** `?q=` (or `?{param}=`) → OR of case-insensitive contains. */
-  search(fields, param = "q") {
+  /**
+   * `?q=` (or `?{param}=`) → OR of `contains` (case-insensitive by default;
+   * `insensitive: false` drops Prisma's Postgres-only `mode`).
+   */
+  search(fields, param = "q", insensitive = true) {
     return ({ query, where }) => {
-      applySearch(where, fields, query[param] ?? query.q);
+      applySearch(where, fields, query[param] ?? query.q, insensitive);
     };
   },
   /** Declarative filter backends keyed by prisma field. */
@@ -203,7 +266,13 @@ var QueryStrategies = {
 function strategiesFor(resource) {
   const out = [];
   if (resource.search?.length) {
-    out.push(QueryStrategies.search(resource.search, resource.searchParam ?? "q"));
+    out.push(
+      QueryStrategies.search(
+        resource.search,
+        resource.searchParam ?? "q",
+        resource.searchCaseInsensitive !== false
+      )
+    );
   }
   if (resource.filters) {
     out.push(
@@ -254,22 +323,27 @@ function isPrismaUnique(error) {
 function unquote(value) {
   return String(value).trim().replace(/^"+|"+$/g, "");
 }
-function prismaUniqueFields(error) {
+function prismaUniqueColumns(error) {
   if (!isPrismaUnique(error)) return [];
   const meta = error.meta ?? {};
   const out = [];
-  const target = meta.target;
-  if (Array.isArray(target)) out.push(...target.map(unquote));
-  else if (typeof target === "string") out.push(unquote(target));
+  if (Array.isArray(meta.target)) out.push(...meta.target.map(unquote));
+  const constraint = meta.driverAdapterError?.cause?.constraint;
+  if (constraint && typeof constraint === "object" && Array.isArray(constraint.fields)) {
+    out.push(...constraint.fields.map(unquote));
+  }
+  return [...new Set(out.filter(Boolean))];
+}
+function prismaUniqueConstraints(error) {
+  if (!isPrismaUnique(error)) return [];
+  const meta = error.meta ?? {};
+  const out = [];
+  if (typeof meta.target === "string") out.push(unquote(meta.target));
   const cause = meta.driverAdapterError?.cause;
   const constraint = cause?.constraint;
-  if (typeof constraint === "string") {
-    out.push(unquote(constraint));
-  } else if (constraint) {
-    if (Array.isArray(constraint.fields)) {
-      out.push(...constraint.fields.map(unquote));
-    }
-    if (typeof constraint.index === "string") out.push(unquote(constraint.index));
+  if (typeof constraint === "string") out.push(unquote(constraint));
+  else if (constraint && typeof constraint.index === "string") {
+    out.push(unquote(constraint.index));
   }
   const message = cause?.originalMessage;
   if (typeof message === "string") {
@@ -278,20 +352,54 @@ function prismaUniqueFields(error) {
   }
   return [...new Set(out.filter(Boolean))];
 }
+function prismaUniqueFields(error) {
+  return [
+    .../* @__PURE__ */ new Set([...prismaUniqueColumns(error), ...prismaUniqueConstraints(error)])
+  ];
+}
+function matchableColumns(error) {
+  const columns = prismaUniqueColumns(error);
+  if (columns.length) return new Set(columns);
+  return new Set(prismaUniqueConstraints(error).flatMap((c) => c.split("_")));
+}
+function keyColumns(key) {
+  return key.split(",").map((k) => k.trim()).filter(Boolean);
+}
+function prismaUniqueMatches(error, key) {
+  if (!isPrismaUnique(error)) return false;
+  const k = key.trim();
+  if (!k) return false;
+  if (prismaUniqueConstraints(error).includes(k)) return true;
+  const wanted = keyColumns(k);
+  if (!wanted.length) return false;
+  const columns = matchableColumns(error);
+  return wanted.every((c) => columns.has(c));
+}
 function prismaUniqueIncludes(error, field) {
-  return prismaUniqueFields(error).some(
-    (f) => f === field || f.includes(field)
-  );
+  return prismaUniqueMatches(error, field);
+}
+function conflict(message, fields) {
+  const body = {
+    statusCode: 409,
+    message,
+    error: "Conflict",
+    fields: fields.filter((f) => f !== "orgId")
+  };
+  return new ConflictException(body);
 }
 function mapPrismaUnique(error, messages, fallback = "Unique constraint violation") {
   if (!isPrismaUnique(error)) return;
-  const fields = prismaUniqueFields(error);
+  const columns = prismaUniqueColumns(error);
   for (const [key, message] of Object.entries(messages)) {
-    if (fields.some((field) => field === key || field.includes(key))) {
-      throw new ConflictException(message);
+    if (prismaUniqueMatches(error, key)) {
+      const isConstraintKey = prismaUniqueConstraints(error).includes(key.trim());
+      throw conflict(
+        message,
+        columns.length ? columns : isConstraintKey ? [] : keyColumns(key)
+      );
     }
   }
-  throw new ConflictException(fallback);
+  throw conflict(fallback, columns);
 }
 function prismaUniqueError(fields) {
   const err = new Error(
@@ -324,6 +432,7 @@ export {
   __decorateClass,
   __decorateParam,
   delegateOf,
+  coerceFilterValue,
   Filter,
   applySearch,
   DEFAULT_PAGE,
@@ -340,7 +449,10 @@ export {
   resolveOrder,
   planList,
   isPrismaUnique,
+  prismaUniqueColumns,
+  prismaUniqueConstraints,
   prismaUniqueFields,
+  prismaUniqueMatches,
   prismaUniqueIncludes,
   mapPrismaUnique,
   prismaUniqueError,
